@@ -11,17 +11,20 @@ import specutils
 
 def Load_Redshift(Pandas_Dataframe, File_Name):
     """
-    Load the redshift from the DJA catalog dataframe.
-    Parameters:
+    This function retrieves the redshift value for a given spectra file from the DJA dataframe.
+    Parameters
+    ----------
     Pandas_Dataframe : pandas.DataFrame
         The dataframe containing the DJA catalog data.
     File_Name : str
         The name of the file for which to load the redshift.
-    Returns:
+    Returns
+    -------
     np.float32
         The redshift value for the specified file.
 
-    Errors:
+    Errors
+    -------
     Returns the error message if the file is not found in the dataframe.
     """
     try:
@@ -64,3 +67,34 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
 
         except Exception as e:
             return e
+
+def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
+    """
+    Calibrate the spectra to the rest frame using the redshift value.
+
+    Parameters
+    ----------
+    Spectrum : specutils.Spectrum1D
+        The Spectrum1D object containing the spectra.
+    Redshift : float
+        The redshift value to use for calibration.
+
+    Returns
+    -------
+    specutils.Spectrum1D
+        The calibrated Spectrum1D object.
+
+    Errors
+    -------
+    Returns the error message if there is an issue with the calibration.
+    """
+    try:
+        Restframe_Spectrum_Wavelength = Spectrum.spectral_axis / (1 + Redshift)
+        Spectrum = specutils.Spectrum1D(
+            flux=Spectrum.flux,
+            spectral_axis=Restframe_Spectrum_Wavelength,
+            meta=Spectrum.meta
+        )
+        return Spectrum
+    except Exception as e:
+        return e
