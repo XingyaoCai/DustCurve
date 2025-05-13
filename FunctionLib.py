@@ -69,6 +69,7 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
             return e
 
 def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
+
     """
     Calibrate the spectra to the rest frame using the redshift value.
 
@@ -98,3 +99,5 @@ def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
         return Spectrum
     except Exception as e:
         return e
+
+
