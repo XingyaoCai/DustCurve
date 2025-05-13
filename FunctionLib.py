@@ -46,7 +46,7 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
     Returns
     -------
     specutils.Spectrum1D
-        The Spectrum1D object containing the spectra.
+        The Spectrum1D object containing the spectra, with the flux in F_lambda units.
 
     Errors
     -------
@@ -54,19 +54,23 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
     """
     with io.fits.open(Fits_FilePath) as hdul:
 
-        try:
-            Spectra_Data = hdul[1].data
-            Spectra_Header = hdul[1].header
+      try:
+        Spectra_Data = hdul[1].data
+        Spectra_Header = hdul[1].header
 
-            Wavelength = Spectra_Data['wave']*units.micron
-            Flux = Spectra_Data['flux']*units.uJy
+        Wavelength = Spectra_Data['wave']*units.micron
+        Flux = Spectra_Data['flux']*units.uJy
+        Error= Spectra_Data['err']*units.uJy
 
-            Flux_Lambda = Flux.to(units.erg / (units.cm**2 * units.s * units.AA), equivalencies=units.spectral_density(Wavelength))
+        Flux_Lambda = Flux.to(units.erg / (units.cm**2 * units.s * units.AA), equivalencies=units.spectral_density(Wavelength))
+        Error_Lambda = Error.to(units.erg / (units.cm**2 * units.s * units.AA), equivalencies=units.spectral_density(Wavelength))
+        Error_Lambda = astropy.nddata.StdDevUncertainty(Error_Lambda)
 
-            return specutils.Spectrum1D(flux=Flux_Lambda, spectral_axis=Wavelength, meta=Spectra_Header)
 
-        except Exception as e:
-            return e
+        return specutils.Spectrum1D(flux=Flux_Lambda, spectral_axis=Wavelength, meta=Spectra_Header, uncertainty=Error_Lambda)
+
+      except Exception as e:
+        return e
 
 def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
 
