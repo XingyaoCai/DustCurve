@@ -8,6 +8,8 @@ import astropy.io as io
 import astropy.units as units
 import specutils
 
+import inspect
+
 
 def Load_Redshift(Pandas_Dataframe, File_Name):
     """
@@ -98,6 +100,7 @@ def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
         Spectrum = specutils.Spectrum1D(
             flux=Spectrum.flux,
             spectral_axis=Restframe_Spectrum_Wavelength,
+            uncertainty=Spectrum.uncertainty,
             meta=Spectrum.meta
         )
         return Spectrum
@@ -105,3 +108,47 @@ def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
         return e
 
 
+def Free(*args):
+    """
+    Free up memory by deleting specified variables from the local or global namespace.
+
+    Parameters
+    ----------
+    args : str
+        Variable names to be deleted.
+        If a variable name is not a string, an error message will be printed.
+        If a variable is not found in the local or global namespace, a warning will be printed.
+
+    Returns
+    -------
+    None
+        This function does not return any value. It only deletes the specified variables and triggers garbage collection.
+
+    """
+    caller_globals = inspect.currentframe().f_back.f_globals
+    caller_locals = inspect.currentframe().f_back.f_locals
+
+    if not args:
+        return
+
+    for var_name in args:
+        if not isinstance(var_name, str):
+            print(f"Error: Variable name '{var_name}' must be a string")
+            continue
+
+        if var_name in caller_locals:
+            namespace = caller_locals
+        elif var_name in caller_globals:
+            namespace = caller_globals
+        else:
+            print(f"Warning: Variable '{var_name}' not found in local or global namespace")
+            continue
+
+        try:
+            del namespace[var_name]
+        except Exception as e:
+            print(f"Error: Could not delete variable '{var_name}': {e}")
+            continue
+    import gc
+    gc.collect()
+    return None
