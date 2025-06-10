@@ -5,13 +5,9 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 
-import scipy
-from scipy import integrate
-import scipy.optimize
+
 import astropy
 import astropy.io as io
-import astropy.nddata
-import astropy.constants as const
 import astropy.units as units
 import specutils
 from tqdm import tqdm
@@ -72,18 +68,16 @@ for file_name_str in tqdm((DJA_File_List_All[0:2000])):
             redshift=redshift_quantity,
             observed_flux_nu=flux
         )
-        spectrum.set_boundarys(lower_boundary=0.45 * units.micron, upper_boundary=0.55 * units.micron)
+        spectrum.set_boundarys(lower_boundary=0.48 * units.micron, upper_boundary=0.49 * units.micron)
 
-
-        spectrum.set_boundarys(0.45 * units.micron,0.55 * units.micron)
-
-
-        fitter=FL.SpectralLineFitter(spectrum, 4863.0 * units.Angstrom, max_components=8, max_iterations=100000,figname=f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png')
-
+        fitter=FL.SpectralLineFitter(spectrum, 4863.0 * units.Angstrom, max_components=2, max_iterations=100000)
+#figname=f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png'
         fitter.iterative_gaussian_fitting(
     line_restframe_wavelength=4863.0 * units.Angstrom,
     tolerance=10 * units.Angstrom,
     plot_results=False
 )
-        fitter.plot_final_decomposition(4863.0 * units.Angstrom)
+        if fitter.fit_results is None:
+            continue
+        fitter.plot_final_decomposition(4863.0 * units.Angstrom,figure_name=f'{file_name_str.split("/")[-1].split(".")[0]}_fit')
 

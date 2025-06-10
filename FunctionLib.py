@@ -1,18 +1,11 @@
-import wave
 import numpy as np
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
 
 import scipy
-from scipy import integrate
-import scipy.optimize
 import astropy
-import astropy.io as io
-import astropy.nddata
-import astropy.constants as const
-import astropy.units as units
-import specutils
+
 
 import inspect
 
@@ -38,7 +31,7 @@ def Load_Redshift(Pandas_Dataframe, File_Name):
     try:
         index = int(np.where(Pandas_Dataframe.file == File_Name)[0][0])
         redshift = Pandas_Dataframe.iloc[index]['z']
-        return np.float32(redshift)* units.dimensionless_unscaled
+        return np.float32(redshift)* astropy.units.dimensionless_unscaled
     except Exception as e:
         return e
 
@@ -64,17 +57,17 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
     -------
     Returns the error message if the FITS file cannot be opened or if there is an issue with the data.
     """
-    with io.fits.open(Fits_FilePath) as hdul:
+    with astropy.io.fits.open(Fits_FilePath) as hdul:
 
       try:
         Spectra_Data = hdul[1].data
 
-        Wavelength = Spectra_Data['wave']*units.micron
-        Flux = Spectra_Data['flux']*units.uJy
-        Error= Spectra_Data['err']*units.uJy
+        Wavelength = Spectra_Data['wave']*astropy.units.micron
+        Flux = Spectra_Data['flux']*astropy.units.uJy
+        Error= Spectra_Data['err']*astropy.units.uJy
 
-        Flux_Lambda = Flux.to(units.erg / (units.cm**2 * units.s * units.AA), equivalencies=units.spectral_density(Wavelength))
-        Error_Lambda = Error.to(units.erg / (units.cm**2 * units.s * units.AA), equivalencies=units.spectral_density(Wavelength))
+        Flux_Lambda = Flux.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
+        Error_Lambda = Error.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
         Error_Lambda = astropy.nddata.StdDevUncertainty(Error_Lambda)
         Error=astropy.nddata.StdDevUncertainty(Error)
 
@@ -163,14 +156,7 @@ def Free(*args):
     gc.collect()
     return None
 
-import astropy.units as u
-from astropy.nddata import NDDataArray
-import numpy as np
 
-import astropy.units as u
-from astropy.nddata import NDDataArray
-from astropy.constants import c
-import numpy as np
 
 class Spectrum_1d:
     """
@@ -228,9 +214,9 @@ class Spectrum_1d:
 
         # Handle redshift
         if isinstance(redshift, (float, int)):
-            self.redshift = redshift * units.dimensionless_unscaled
-        elif isinstance(redshift, units.Quantity):
-            if redshift.unit.is_equivalent(units.dimensionless_unscaled):
+            self.redshift = redshift * astropy.units.dimensionless_unscaled
+        elif isinstance(redshift, astropy.units.Quantity):
+            if redshift.unit.is_equivalent(astropy.units.dimensionless_unscaled):
                 self.redshift = redshift
             else:
                 raise ValueError("Redshift must be dimensionless.")
@@ -240,7 +226,7 @@ class Spectrum_1d:
         # Calculate rest-frame wavelengths
         # Get the observed wavelength data, which might be a Quantity or ndarray
         obs_wave_data_attr = self.observed_wavelengths.data
-        if isinstance(obs_wave_data_attr, units.Quantity):
+        if isinstance(obs_wave_data_attr, astropy.units.Quantity):
             obs_wave_values = obs_wave_data_attr.value
         else:
             obs_wave_values = obs_wave_data_attr # Assuming it's a numpy array
@@ -317,7 +303,7 @@ class Spectrum_1d:
         self.processing_wavelengths = self.restframe_wavelengths if self.restframe_wavelengths is not None else self.observed_wavelengths
 
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
-            units.AA)
+            astropy.units.AA)
 
         # Handle NaN values by converting them to 0
         self._handle_nan_values()
@@ -437,7 +423,7 @@ class Spectrum_1d:
 
             uncertainty_F_nu_converted = uncertainty_F_lambda_quantity.to(
                 target_F_nu_unit,
-                equivalencies=units.spectral_density(rest_wave_quantity)
+                equivalencies=astropy.units.spectral_density(rest_wave_quantity)
             )
             uncertainty_nu_data = uncertainty_F_nu_converted.value
             uncertainty_nu_obj = type(self.observed_flux_lambda.uncertainty)(uncertainty_nu_data)
@@ -517,7 +503,7 @@ class Spectrum_1d:
             self.processing_flux = self.observed_flux_lambda[indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
 
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
-            units.AA)
+            astropy.units.AA)
 
 
     def show(self):
@@ -588,7 +574,7 @@ class SpectralLineFitter:
 
     """
 
-    def __init__(self, spectrum, line_restframe_wavelengths, max_components=8, max_iterations=100000, figname=None):
+    def __init__(self, spectrum, line_restframe_wavelengths, max_components=8, max_iterations=100000):
         """
         Initializes the SpectralLineFitter with a spectrum and spectral lines to fit.
 
@@ -619,7 +605,6 @@ class SpectralLineFitter:
         self.max_components = max_components
         self.max_iterations = max_iterations
         self.fit_results = []
-        self.figname= figname
 
     def gaussian(self, x, amplitude, mean, stddev):
         """
@@ -869,7 +854,7 @@ class SpectralLineFitter:
                     (self.spectrum.processing_wavelengths.data - line_restframe_wavelength.value))
                 initial_guess= [self.spectrum.processing_flux.data[indice],
                                 line_restframe_wavelength.value,
-                                10]
+                                5]
             else:
                 initial_guess = None
 
@@ -947,7 +932,7 @@ class SpectralLineFitter:
                 }
         return None
 
-    def plot_final_decomposition(self, line_restframe_wavelength):
+    def plot_final_decomposition(self, line_restframe_wavelength,figure_name=None):
         """
         Plots the final decomposition of the spectral line with all fitted components.
 
@@ -969,7 +954,7 @@ class SpectralLineFitter:
 
         plt.figure(figsize=(20, 10))
 
-        plt.plot(self.spectrum.processing_wavelengths.data, self.spectrum.observed_flux_lambda.data[subindices], label="Observed Spectrum", color='blue', alpha=0.5)
+        plt.step(self.spectrum.processing_wavelengths.data, self.spectrum.observed_flux_lambda.data[subindices], label="Observed Spectrum", color='blue', alpha=0.5, linewidth=1.6)
 
         colors = ['red', 'blue', 'green', 'orange', 'purple']
 
@@ -1005,7 +990,7 @@ class SpectralLineFitter:
         flux_margin = 0.1 * np.nanmax(self.spectrum.observed_flux_lambda.data[subindices])
         plt.ylim(np.nanmin(self.spectrum.observed_flux_lambda.data[subindices]) - flux_margin, np.nanmax(self.spectrum.observed_flux_lambda.data[subindices]) + flux_margin)
         plt.grid()
-        plt.savefig(f"./fig/Final_Decomposition_{self.figname}")
+        plt.savefig(f"./fig/Final_Decomposition_{figure_name if figure_name else 'spectrum'}.png")
         plt.close()
 
 
