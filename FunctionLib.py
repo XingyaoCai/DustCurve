@@ -5,35 +5,45 @@ import matplotlib.pyplot as plt
 
 import scipy
 import astropy
+import astropy.units
+import astropy.nddata
+import astropy.io
 
 
 import inspect
 
-
-def Load_Redshift(Pandas_Dataframe, File_Name):
+def Load_Spectrum_Redshift(filepath, catalog):
     """
-    This function retrieves the redshift value for a given spectra file from the DJA dataframe.
+    Load the redshift from a spectrum file from the catalog.
+
     Parameters
     ----------
-    Pandas_Dataframe : pandas.DataFrame
-        The dataframe containing the DJA catalog data.
-    File_Name : str
-        The name of the file for which to load the redshift.
+    filepath : str
+        The file path of the spectrum file.
+    catalog : pandas.DataFrame
+        The catalog DataFrame containing spectrum information.
+
     Returns
     -------
-    redshift : astropy.units.Quantity
-        The redshift value for the specified file.
-
-    Errors
-    -------
-    Returns the error message if the file is not found in the dataframe.
+    redshift : astropy.units.Quantity or None
+        The redshift of the spectrum, or None if not found.
     """
-    try:
-        index = int(np.where(Pandas_Dataframe.file == File_Name)[0][0])
-        redshift = Pandas_Dataframe.iloc[index]['z']
-        return np.float32(redshift)* astropy.units.dimensionless_unscaled
-    except Exception as e:
-        return e
+
+    filename=filepath.split('/')[-1]
+
+    index_in_catalog=catalog[catalog['file']== filename].index
+
+    if len(index_in_catalog) == 0:
+        return None
+
+    redshift_value = catalog.loc[index_in_catalog[0], 'z']
+
+    if np.isnan(redshift_value):
+        redshift_value=catalog.loc[index_in_catalog[0], 'zfit']
+
+    if np.isnan(redshift_value):
+        return None
+    return astropy.units.Quantity(redshift_value, unit=astropy.units.dimensionless_unscaled)
 
 def Load_N_Rescale_Spectra(Fits_FilePath):
     """
