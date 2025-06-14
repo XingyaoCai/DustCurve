@@ -12,6 +12,11 @@ import astropy.io
 
 import inspect
 
+import re
+import collections
+import tqdm
+
+
 def Load_Spectrum_Redshift(filepath, catalog):
     """
     Load the redshift from a spectrum file from the catalog.
@@ -29,9 +34,9 @@ def Load_Spectrum_Redshift(filepath, catalog):
         The redshift of the spectrum, or None if not found.
     """
 
-    filename=filepath.split('/')[-1]
+    filename = filepath.split('/')[-1]
 
-    index_in_catalog=catalog[catalog['file']== filename].index
+    index_in_catalog = catalog[catalog['file'] == filename].index
 
     if len(index_in_catalog) == 0:
         return None
@@ -39,11 +44,10 @@ def Load_Spectrum_Redshift(filepath, catalog):
     redshift_value = catalog.loc[index_in_catalog[0], 'z']
 
     if np.isnan(redshift_value):
-        redshift_value=catalog.loc[index_in_catalog[0], 'zfit']
-
-    if np.isnan(redshift_value):
-        return None
+        redshift_value = catalog.loc[index_in_catalog[0], 'zfit']
+        return astropy.units.Quantity(redshift_value, unit=astropy.units.dimensionless_unscaled)
     return astropy.units.Quantity(redshift_value, unit=astropy.units.dimensionless_unscaled)
+
 
 def Load_N_Rescale_Spectra(Fits_FilePath):
     """
@@ -69,23 +73,24 @@ def Load_N_Rescale_Spectra(Fits_FilePath):
     """
     with astropy.io.fits.open(Fits_FilePath) as hdul:
 
-      try:
-        Spectra_Data = hdul[1].data
+        try:
+            Spectra_Data = hdul[1].data
 
-        Wavelength = Spectra_Data['wave']*astropy.units.micron
-        Flux = Spectra_Data['flux']*astropy.units.uJy
-        Error= Spectra_Data['err']*astropy.units.uJy
+            Wavelength = Spectra_Data['wave']*astropy.units.micron
+            Flux = Spectra_Data['flux']*astropy.units.uJy
+            Error = Spectra_Data['err']*astropy.units.uJy
 
-        Flux_Lambda = Flux.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
-        Error_Lambda = Error.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
-        Error_Lambda = astropy.nddata.StdDevUncertainty(Error_Lambda)
-        Error=astropy.nddata.StdDevUncertainty(Error)
+            Flux_Lambda = Flux.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s *
+                                  astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
+            Error_Lambda = Error.to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s *
+                                    astropy.units.AA), equivalencies=astropy.units.spectral_density(Wavelength))
+            Error_Lambda = astropy.nddata.StdDevUncertainty(Error_Lambda)
+            Error = astropy.nddata.StdDevUncertainty(Error)
 
+            return astropy.nddata.NDDataArray(Wavelength), astropy.nddata.NDDataArray(Flux_Lambda, uncertainty=Error_Lambda), astropy.nddata.NDDataArray(Flux, uncertainty=Error)
 
-        return astropy.nddata.NDDataArray(Wavelength),astropy.nddata.NDDataArray(Flux_Lambda, uncertainty=Error_Lambda),astropy.nddata.NDDataArray(Flux, uncertainty=Error)
-
-      except Exception as e:
-        return e
+        except Exception as e:
+            return e
 
 # def Calibrate_Spectra_To_RestFrame(Spectrum, Redshift):
 
@@ -154,7 +159,8 @@ def Free(*args):
         elif var_name in caller_globals:
             namespace = caller_globals
         else:
-            print(f"Warning: Variable '{var_name}' not found in local or global namespace")
+            print(
+                f"Warning: Variable '{var_name}' not found in local or global namespace")
             continue
 
         try:
@@ -165,7 +171,6 @@ def Free(*args):
     import gc
     gc.collect()
     return None
-
 
 
 class Spectrum_1d:
@@ -211,16 +216,19 @@ class Spectrum_1d:
         """
         # Check that at least one flux is provided
         if observed_flux_lambda is None and observed_flux_nu is None:
-            raise ValueError("At least one of observed_flux_nu or observed_flux_lambda must be provided.")
+            raise ValueError(
+                "At least one of observed_flux_nu or observed_flux_lambda must be provided.")
 
         # Handle wavelengths - allow both NDDataArray and Quantity
         if isinstance(observed_wavelengths, astropy.nddata.NDDataArray):
             self.observed_wavelengths = observed_wavelengths
         elif isinstance(observed_wavelengths, astropy.units.Quantity):
             # If input is a Quantity, NDDataArray stores it in its .data attribute
-            self.observed_wavelengths = astropy.nddata.NDDataArray(observed_wavelengths)
+            self.observed_wavelengths = astropy.nddata.NDDataArray(
+                observed_wavelengths)
         else:
-            raise TypeError("observed_wavelengths must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
+            raise TypeError(
+                "observed_wavelengths must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
 
         # Handle redshift
         if isinstance(redshift, (float, int)):
@@ -231,7 +239,8 @@ class Spectrum_1d:
             else:
                 raise ValueError("Redshift must be dimensionless.")
         else:
-            raise TypeError("Redshift must be a float, int, or dimensionless astropy.units.Quantity.")
+            raise TypeError(
+                "Redshift must be a float, int, or dimensionless astropy.units.Quantity.")
 
         # Calculate rest-frame wavelengths
         # Get the observed wavelength data, which might be a Quantity or ndarray
@@ -239,7 +248,7 @@ class Spectrum_1d:
         if isinstance(obs_wave_data_attr, astropy.units.Quantity):
             obs_wave_values = obs_wave_data_attr.value
         else:
-            obs_wave_values = obs_wave_data_attr # Assuming it's a numpy array
+            obs_wave_values = obs_wave_data_attr  # Assuming it's a numpy array
 
         rest_wave_data = obs_wave_values / (1 + self.redshift.value)
 
@@ -247,16 +256,18 @@ class Spectrum_1d:
         if self.observed_wavelengths.uncertainty is not None:
             # Assuming uncertainty.array gives the numerical values of uncertainty
             # and it needs to be scaled like the data.
-            rest_wave_uncertainty_values = self.observed_wavelengths.uncertainty.array / (1 + self.redshift.value)
+            rest_wave_uncertainty_values = self.observed_wavelengths.uncertainty.array / \
+                (1 + self.redshift.value)
             # Reconstruct the uncertainty object with the new values
-            rest_wave_uncertainty = type(self.observed_wavelengths.uncertainty)(rest_wave_uncertainty_values)
+            rest_wave_uncertainty = type(self.observed_wavelengths.uncertainty)(
+                rest_wave_uncertainty_values)
         else:
             rest_wave_uncertainty = None
 
         self.restframe_wavelengths = astropy.nddata.NDDataArray(
-            data=rest_wave_data, # This data is a numpy array
+            data=rest_wave_data,  # This data is a numpy array
             uncertainty=rest_wave_uncertainty,
-            unit=self.observed_wavelengths.unit # Unit is preserved
+            unit=self.observed_wavelengths.unit  # Unit is preserved
         )
 
         # Handle F_nu flux
@@ -264,11 +275,14 @@ class Spectrum_1d:
             if isinstance(observed_flux_nu, astropy.nddata.NDDataArray):
                 self.observed_flux_nu = observed_flux_nu
             elif isinstance(observed_flux_nu, astropy.units.Quantity):
-                self.observed_flux_nu = astropy.nddata.NDDataArray(observed_flux_nu) # .data will be the Quantity
+                self.observed_flux_nu = astropy.nddata.NDDataArray(
+                    observed_flux_nu)  # .data will be the Quantity
             else:
-                raise TypeError("observed_flux_nu must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
+                raise TypeError(
+                    "observed_flux_nu must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
 
-            target_unit_nu = astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
+            target_unit_nu = astropy.units.erg / \
+                (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
             # Check unit equivalency using the actual quantity
             flux_nu_data_attr = self.observed_flux_nu.data
             if isinstance(flux_nu_data_attr, astropy.units.Quantity):
@@ -286,11 +300,14 @@ class Spectrum_1d:
             if isinstance(observed_flux_lambda, astropy.nddata.NDDataArray):
                 self.observed_flux_lambda = observed_flux_lambda
             elif isinstance(observed_flux_lambda, astropy.units.Quantity):
-                self.observed_flux_lambda = astropy.nddata.NDDataArray(observed_flux_lambda) # .data will be the Quantity
+                self.observed_flux_lambda = astropy.nddata.NDDataArray(
+                    observed_flux_lambda)  # .data will be the Quantity
             else:
-                raise TypeError("observed_flux_lambda must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
+                raise TypeError(
+                    "observed_flux_lambda must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
 
-            target_unit_lambda = astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
+            target_unit_lambda = astropy.units.erg / \
+                (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
             # Check unit equivalency
             flux_lambda_data_attr = self.observed_flux_lambda.data
             if isinstance(flux_lambda_data_attr, astropy.units.Quantity):
@@ -402,21 +419,26 @@ class Spectrum_1d:
             return data_attr
         elif nddata_array.unit is not None:
             return data_attr * nddata_array.unit
-        else: # Should not happen if units are always present as per design
-            raise ValueError("NDDataArray is missing unit information for quantity conversion.")
+        else:  # Should not happen if units are always present as per design
+            raise ValueError(
+                "NDDataArray is missing unit information for quantity conversion.")
 
     def _convert_lambda_to_nu(self):
         """Convert F_lambda to F_nu using astropy.units.spectral_density and rest-frame wavelength."""
         if self.observed_flux_lambda is None:
-            raise ValueError("Cannot convert from F_lambda: observed_flux_lambda is None.")
+            raise ValueError(
+                "Cannot convert from F_lambda: observed_flux_lambda is None.")
 
-        F_lambda_quantity_to_convert = self._get_quantity_from_nddata(self.observed_flux_lambda)
+        F_lambda_quantity_to_convert = self._get_quantity_from_nddata(
+            self.observed_flux_lambda)
 
         # For spectral_density, the wavelength needs to be a Quantity.
         # self.restframe_wavelengths.data is a numpy array, .unit is the unit.
-        rest_wave_quantity = self.restframe_wavelengths.data * self.restframe_wavelengths.unit
+        rest_wave_quantity = self.restframe_wavelengths.data * \
+            self.restframe_wavelengths.unit
 
-        target_F_nu_unit = astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
+        target_F_nu_unit = astropy.units.erg / \
+            (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
 
         F_nu_converted = F_lambda_quantity_to_convert.to(
             target_F_nu_unit,
@@ -429,17 +451,20 @@ class Spectrum_1d:
         if self.observed_flux_lambda.uncertainty is not None:
             uncertainty_F_lambda_values = self.observed_flux_lambda.uncertainty.array
             # Assume uncertainty has the same unit as the flux data
-            uncertainty_F_lambda_quantity = uncertainty_F_lambda_values * self.observed_flux_lambda.unit
+            uncertainty_F_lambda_quantity = uncertainty_F_lambda_values * \
+                self.observed_flux_lambda.unit
 
             uncertainty_F_nu_converted = uncertainty_F_lambda_quantity.to(
                 target_F_nu_unit,
-                equivalencies=astropy.units.spectral_density(rest_wave_quantity)
+                equivalencies=astropy.units.spectral_density(
+                    rest_wave_quantity)
             )
             uncertainty_nu_data = uncertainty_F_nu_converted.value
-            uncertainty_nu_obj = type(self.observed_flux_lambda.uncertainty)(uncertainty_nu_data)
+            uncertainty_nu_obj = type(
+                self.observed_flux_lambda.uncertainty)(uncertainty_nu_data)
 
         self.observed_flux_nu = astropy.nddata.NDDataArray(
-            data=flux_nu_data, # flux_nu_data is now a numpy array
+            data=flux_nu_data,  # flux_nu_data is now a numpy array
             uncertainty=uncertainty_nu_obj,
             unit=target_F_nu_unit
         )
@@ -447,14 +472,18 @@ class Spectrum_1d:
     def _convert_nu_to_lambda(self):
         """Convert F_nu to F_lambda using astropy.units.spectral_density and rest-frame wavelength."""
         if self.observed_flux_nu is None:
-            raise ValueError("Cannot convert from F_nu: observed_flux_nu is None.")
+            raise ValueError(
+                "Cannot convert from F_nu: observed_flux_nu is None.")
 
-        F_nu_quantity_to_convert = self._get_quantity_from_nddata(self.observed_flux_nu)
+        F_nu_quantity_to_convert = self._get_quantity_from_nddata(
+            self.observed_flux_nu)
 
         # For spectral_density, the wavelength needs to be a Quantity.
-        rest_wave_quantity = self.restframe_wavelengths.data * self.restframe_wavelengths.unit
+        rest_wave_quantity = self.restframe_wavelengths.data * \
+            self.restframe_wavelengths.unit
 
-        target_F_lambda_unit = astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
+        target_F_lambda_unit = astropy.units.erg / \
+            (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
 
         F_lambda_converted = F_nu_quantity_to_convert.to(
             target_F_lambda_unit,
@@ -471,17 +500,18 @@ class Spectrum_1d:
 
             uncertainty_F_lambda_converted = uncertainty_F_nu_quantity.to(
                 target_F_lambda_unit,
-                equivalencies=astropy.units.spectral_density(rest_wave_quantity)
+                equivalencies=astropy.units.spectral_density(
+                    rest_wave_quantity)
             )
             uncertainty_lambda_data = uncertainty_F_lambda_converted.value
-            uncertainty_lambda_obj = type(self.observed_flux_nu.uncertainty)(uncertainty_lambda_data)
+            uncertainty_lambda_obj = type(
+                self.observed_flux_nu.uncertainty)(uncertainty_lambda_data)
 
         self.observed_flux_lambda = astropy.nddata.NDDataArray(
-            data=flux_lambda_data, # flux_lambda_data is now a numpy array
+            data=flux_lambda_data,  # flux_lambda_data is now a numpy array
             uncertainty=uncertainty_lambda_obj,
             unit=target_F_lambda_unit
         )
-
 
     def set_boundarys(self, lower_boundary=None, upper_boundary=None):
         """
@@ -496,29 +526,32 @@ class Spectrum_1d:
         """
         if lower_boundary is not None and upper_boundary is None:
             lower_boundary = lower_boundary.to(self.restframe_wavelengths.unit)
-            indices= self.restframe_wavelengths.data >= lower_boundary.value
+            indices = self.restframe_wavelengths.data >= lower_boundary.value
             self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
+            self.processing_flux = self.observed_flux_lambda[
+                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
         if upper_boundary is not None and lower_boundary is None:
             upper_boundary = upper_boundary.to(self.restframe_wavelengths.unit)
-            indices= self.restframe_wavelengths.data <= upper_boundary.value
+            indices = self.restframe_wavelengths.data <= upper_boundary.value
             self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
+            self.processing_flux = self.observed_flux_lambda[
+                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
 
         if lower_boundary is not None and upper_boundary is not None:
             lower_boundary = lower_boundary.to(self.restframe_wavelengths.unit)
             upper_boundary = upper_boundary.to(self.restframe_wavelengths.unit)
-            indices = (self.restframe_wavelengths.data >= lower_boundary.value) & (self.restframe_wavelengths.data <= upper_boundary.value)
+            indices = (self.restframe_wavelengths.data >= lower_boundary.value) & (
+                self.restframe_wavelengths.data <= upper_boundary.value)
             self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
+            self.processing_flux = self.observed_flux_lambda[
+                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
 
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
-
     def show(self):
         """Display the processed spectrum."""
-        plt.figure(figsize=(20,10))
+        plt.figure(figsize=(20, 10))
         if self.processing_wavelengths is not None and self.processing_flux is not None:
             if isinstance(self.processing_wavelengths, astropy.nddata.NDDataArray):
                 wave_data = self.processing_wavelengths.data
@@ -535,7 +568,8 @@ class Spectrum_1d:
                 flux_unit = None
 
             plt.plot(wave_data, flux_data, label='Processed Spectrum')
-            plt.xlabel(f'Wavelength ({wave_unit})' if wave_unit else 'Wavelength')
+            plt.xlabel(
+                f'Wavelength ({wave_unit})' if wave_unit else 'Wavelength')
             plt.ylabel(f'Flux ({flux_unit})' if flux_unit else 'Flux')
             plt.title(f'Spectrum at Redshift {self.redshift.value:.3f}')
             plt.legend()
@@ -559,6 +593,7 @@ class Spectrum_1d:
                 num_points_str = "0"
 
         return f"Spectrum_1d(z={self.redshift.value:.3f}, λ_obs={wave_data_repr}, {num_points_str} points)"
+
 
 class SpectralLineFitter:
     """
@@ -610,7 +645,8 @@ class SpectralLineFitter:
         elif isinstance(line_restframe_wavelengths, list) and all(isinstance(w, astropy.units.Quantity) for w in line_restframe_wavelengths):
             self.line_restframe_wavelengths = line_restframe_wavelengths
         else:
-            raise TypeError("line_restframe_wavelengths must be an astropy.units.Quantity or a list of astropy.units.Quantity objects.")
+            raise TypeError(
+                "line_restframe_wavelengths must be an astropy.units.Quantity or a list of astropy.units.Quantity objects.")
 
         self.max_components = max_components
         self.max_iterations = max_iterations
@@ -647,7 +683,44 @@ class SpectralLineFitter:
         else:
             return amplitude * np.exp(-0.5 * ((x - mean) / stddev) ** 2)
 
-    def fit_single_gaussian(self,initial_guess=None):
+    def gaussian_with_offset(self, x, amplitude, mean, stddev, offset=0):
+        """
+        Gaussian function with an offset for fitting.
+
+        Parameters
+        ----------
+        x : array-like
+            The independent variable (wavelengths).
+        amplitude : float
+            The height of the Gaussian peak.
+        mean : float
+            The position of the center of the Gaussian.
+        stddev : float
+            The standard deviation (width) of the Gaussian.
+        offset : float, optional
+            An offset to be added to the Gaussian (default is 0).
+
+        Returns
+        -------
+        array-like
+            The values of the Gaussian function at x with an offset.
+
+        """
+
+        if isinstance(x, astropy.nddata.NDDataArray):
+            x = x.data
+            return astropy.nddata.NDDataArray(
+                data=amplitude *
+                np.exp(-0.5 * ((x - mean) / stddev) ** 2) + offset,
+                unit=x.unit
+            )
+        elif isinstance(x, astropy.units.Quantity):
+            return (amplitude * np.exp(-0.5 * ((x.value - mean) / stddev) ** 2) + offset) * x.unit
+
+        else:
+            return amplitude * np.exp(-0.5 * ((x - mean) / stddev) ** 2) + offset
+
+    def fit_single_gaussian(self, initial_guess=None):
         """
         Fits a single Gaussian to the spectrum data, the initial guess will be generated based on the observed fluxes.
 
@@ -659,62 +732,140 @@ class SpectralLineFitter:
 
         try:
             # Extract observed wavelengths and fluxes
-            obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(astropy.units.AA).data
+            obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+                astropy.units.AA).data
             obs_flux_lambda = self.spectrum.processing_flux.data
-            #NumPy array
+            # NumPy array
 
             # Initial guess for the Gaussian parameters
             amplitude_guess = obs_flux_lambda.max()  # Initial guess for the amplitude
-            mean_guess = obs_wavelengths[np.argmax(obs_flux_lambda)]  # Initial guess for the mean (wavelength of max flux)
-            stddev_guess = 10 * astropy.units.AA  # Initial guess for the width, can be adjusted
-            #int or float here
+            # Initial guess for the mean (wavelength of max flux)
+            mean_guess = obs_wavelengths[np.argmax(obs_flux_lambda)]
+            # Initial guess for the width, can be adjusted
+            stddev_guess = 10 * astropy.units.AA
+            # int or float here
 
             if initial_guess is not None:
                 amplitude_guess = initial_guess[0]
                 mean_guess = initial_guess[1]
                 stddev_guess = initial_guess[2] * astropy.units.AA
             elif not isinstance(stddev_guess, astropy.units.Quantity):
-                raise TypeError("stddev_guess must be an astropy.units.Quantity object.")
+                raise TypeError(
+                    "stddev_guess must be an astropy.units.Quantity object.")
             else:
                 stddev_guess = stddev_guess.to(astropy.units.AA)
-                initial_guess = [amplitude_guess, mean_guess, stddev_guess.value]
+                initial_guess = [amplitude_guess,
+                                 mean_guess, stddev_guess.value]
 
-            #print(f"Initial guess for Gaussian parameters: {initial_guess}")
+            # print(f"Initial guess for Gaussian parameters: {initial_guess}")
 
             # Fit the Gaussian using scipy.optimize.curve_fit
 
             popt, pcov = scipy.optimize.curve_fit(self.gaussian,
-                                                    obs_wavelengths,
-                                                    obs_flux_lambda,
-                                                    p0=initial_guess,
-                                                    maxfev=self.max_iterations)
+                                                  obs_wavelengths,
+                                                  obs_flux_lambda,
+                                                  p0=initial_guess,
+                                                  maxfev=self.max_iterations)
 
             y_fit = self.gaussian(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(), args=tuple(popt),epsabs=0)* self.spectrum.processing_flux.unit* self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
+            ), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
-                    'success': True,
-                    'parameters': {
-                        'amplitude': popt[0] * self.spectrum.processing_flux.unit,
-                        'mean': popt[1] * astropy.units.AA,
-                        'stddev': popt[2] * astropy.units.AA,
-                    },
-                    'fitted_curve': astropy.nddata.NDDataArray(
-                        data=y_fit,
-                        unit=self.spectrum.processing_flux.unit
-                    ),
-                    'covariance': pcov,
-                    'integrated_flux': integrated_flux,
-                    'integration_error': integration_error
-                }
+                'success': True,
+                'parameters': {
+                    'amplitude': popt[0] * self.spectrum.processing_flux.unit,
+                    'mean': popt[1] * astropy.units.AA,
+                    'stddev': popt[2] * astropy.units.AA,
+                },
+                'fitted_curve': astropy.nddata.NDDataArray(
+                    data=y_fit,
+                    unit=self.spectrum.processing_flux.unit
+                ),
+                'covariance': pcov,
+                'integrated_flux': integrated_flux,
+                'integration_error': integration_error
+            }
         except Exception as e:
             return {
                 'success': False,
                 'error': str(e)
             }
 
-    def check_line(self, line_restframe_wavelength, mean_fit, tolerance=10* astropy.units.AA):
+    def fit_single_gaussian_with_offset(self, initial_guess=None):
+        """
+        Fits a single Gaussian with an offset (using the gaussian_with_offset method defined above) to the spectrum data, the initial guess is an optional parameter, if not provided, it will be generated based on the observed fluxes.
+        Parameters
+        ----------
+        initial_guess : list, optional
+            A list containing the initial guesses for the Gaussian parameters [amplitude, mean, stddev, offset]. If None, the initial guess will be generated based on the observed fluxes (default is None).
+        Returns
+        -------
+        dict
+            A dictionary containing the fit results, including the fitted parameters and the covariance matrix.
+        """
+
+        try:
+            # Extract observed wavelengths and fluxes from self.spectrum
+            obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+                astropy.units.AA).data
+            obs_flux_lambda = self.spectrum.processing_flux.convert_unit_to(
+                astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)).data
+
+            # NumPy Array now
+
+            # Initial guess for the Gaussian parameters
+
+            if initial_guess is None:
+                amplitude_guess = obs_flux_lambda.max()
+                mean_guess = obs_wavelengths[np.argmax(obs_flux_lambda)]
+                stddev_guess = 2
+                # Use median as initial guess for offset
+                offset_guess = np.median(obs_flux_lambda)
+
+                initial_guess = [amplitude_guess,
+                                 mean_guess, stddev_guess, offset_guess]
+            else:
+                if len(initial_guess) != 4:
+                    raise ValueError(
+                        "initial_guess must contain exactly 4 parameters: [amplitude, mean, stddev, offset].")
+
+            popt, pcov = scipy.optimize.curve_fit(self.gaussian_with_offset,
+                                                  obs_wavelengths,
+                                                  obs_flux_lambda,
+                                                  p0=initial_guess,
+                                                  maxfev=self.max_iterations)
+
+            y_fit = self.gaussian_with_offset(obs_wavelengths, *popt)
+
+            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian_with_offset, obs_wavelengths.min(), obs_wavelengths.max(
+            ), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+
+            return {
+                'success': True,
+                'parameters': {
+                    'amplitude': popt[0] * self.spectrum.processing_flux.unit,
+                    'mean': popt[1] * astropy.units.AA,
+                    'stddev': popt[2] * astropy.units.AA,
+                    'offset': popt[3] * self.spectrum.processing_flux.unit
+                },
+                'fitted_curve': astropy.nddata.NDDataArray(
+                    data=y_fit,
+                    unit=self.spectrum.processing_flux.unit
+                ),
+                'covariance': pcov,
+                'integrated_flux': integrated_flux,
+                'integration_error': integration_error
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def check_line(self, line_restframe_wavelength, mean_fit, tolerance=10 * astropy.units.AA):
         """
         Checks if the line_restframe_wavelength is within the tolerance of the mean_fit.
 
@@ -733,11 +884,14 @@ class SpectralLineFitter:
             True if the line is within the tolerance, False otherwise.
         """
         if not isinstance(line_restframe_wavelength, astropy.units.Quantity):
-            raise TypeError("line_restframe_wavelength must be an astropy.units.Quantity object.")
+            raise TypeError(
+                "line_restframe_wavelength must be an astropy.units.Quantity object.")
         if not isinstance(mean_fit, astropy.units.Quantity):
-            raise TypeError("mean_fit must be an astropy.units.Quantity object.")
+            raise TypeError(
+                "mean_fit must be an astropy.units.Quantity object.")
         if not isinstance(tolerance, astropy.units.Quantity):
-            raise TypeError("tolerance must be an astropy.units.Quantity object.")
+            raise TypeError(
+                "tolerance must be an astropy.units.Quantity object.")
 
         return abs(line_restframe_wavelength - mean_fit) <= tolerance
 
@@ -755,26 +909,32 @@ class SpectralLineFitter:
             If True, plot the residuals instead of the fitted curve (default is False).
         """
         if not isinstance(fit_result, dict):
-            raise TypeError("fit_result must be a dictionary containing the fit results.")
+            raise TypeError(
+                "fit_result must be a dictionary containing the fit results.")
 
         if 'fitted_curve' not in fit_result or 'parameters' not in fit_result:
-            raise ValueError("fit_result must contain 'fitted_curve' and 'parameters' keys.")
+            raise ValueError(
+                "fit_result must contain 'fitted_curve' and 'parameters' keys.")
 
-        obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(astropy.units.AA).data
+        obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+            astropy.units.AA).data
         obs_flux_lambda = self.spectrum.processing_flux.data
 
-        fig,ax= plt.subplots(figsize=(20, 10))
+        fig, ax = plt.subplots(figsize=(20, 10))
 
         if is_residual:
-            ax.plot(obs_wavelengths, obs_flux_lambda, label=f"Residual Spectrum {component_index}", color='blue', alpha=0.5)
-            title=f'Component {component_index} - Gaussian Fit Residuals'
+            ax.plot(obs_wavelengths, obs_flux_lambda,
+                    label=f"Residual Spectrum {component_index}", color='blue', alpha=0.5)
+            title = f'Component {component_index} - Gaussian Fit Residuals'
 
         else:
-            ax.plot(obs_wavelengths, obs_flux_lambda, label=f"Observed Spectrum {component_index}", color='blue', alpha=0.5)
-            title=f'Component {component_index} - Gaussian Fit Result'
+            ax.plot(obs_wavelengths, obs_flux_lambda,
+                    label=f"Observed Spectrum {component_index}", color='blue', alpha=0.5)
+            title = f'Component {component_index} - Gaussian Fit Result'
 
         if fit_result['success']:
-            ax.plot(obs_wavelengths, fit_result['fitted_curve'].data, label=f"Fitted Curve {component_index}", color='red', alpha=0.7)
+            ax.plot(obs_wavelengths, fit_result['fitted_curve'].data,
+                    label=f"Fitted Curve {component_index}", color='red', alpha=0.7)
 
         ax.set_xlabel("Wavelength (Angstrom)", fontsize=14)
         ax.set_ylabel("Flux (erg/cm^2/s/Angstrom)", fontsize=14)
@@ -783,8 +943,9 @@ class SpectralLineFitter:
         ax.set_xlim(obs_wavelengths.min(), obs_wavelengths.max())
 
         if not is_residual:
-            flux_margin= 0.1 * np.nanmax(obs_flux_lambda)
-            ax.set_ylim(np.nanmin(obs_flux_lambda) - flux_margin, np.nanmax(obs_flux_lambda) + flux_margin)
+            flux_margin = 0.1 * np.nanmax(obs_flux_lambda)
+            ax.set_ylim(np.nanmin(obs_flux_lambda) - flux_margin,
+                        np.nanmax(obs_flux_lambda) + flux_margin)
 
         plt.grid()
         plt.show()
@@ -801,10 +962,12 @@ class SpectralLineFitter:
             The index of the component to print the summary for (default is 0).
         """
         if not isinstance(fit_result, dict):
-            raise TypeError("fit_result must be a dictionary containing the fit results.")
+            raise TypeError(
+                "fit_result must be a dictionary containing the fit results.")
 
         if 'parameters' not in fit_result or 'covariance' not in fit_result:
-            raise ValueError("fit_result must contain 'parameters' and 'covariance' keys.")
+            raise ValueError(
+                "fit_result must contain 'parameters' and 'covariance' keys.")
 
         if fit_result['success']:
             params = fit_result['parameters']
@@ -820,7 +983,8 @@ class SpectralLineFitter:
 
         else:
             print(f"\n{'='*60}")
-            print(f"Component {component_index} Fit Failed: {fit_result['error']}")
+            print(
+                f"Component {component_index} Fit Failed: {fit_result['error']}")
             print(f"{'='*60}\n")
 
     def iterative_gaussian_fitting(self, line_restframe_wavelength, tolerance=10 * astropy.units.AA, plot_results=True):
@@ -847,31 +1011,34 @@ class SpectralLineFitter:
         """
 
         self.fit_results = []  # Reset fit results for each line
-        line_integrated_flux = 0 * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+        line_integrated_flux = 0 * self.spectrum.processing_flux.unit * \
+            self.spectrum.processing_wavelengths.unit
 
         for component_index in range(self.max_components):
 
             if not isinstance(line_restframe_wavelength, astropy.units.Quantity):
-                raise TypeError("line_restframe_wavelength must be an astropy.units.Quantity object.")
+                raise TypeError(
+                    "line_restframe_wavelength must be an astropy.units.Quantity object.")
 
             # print(f"\n{'='*60}")
             # print(f"Fitting Component {component_index + 1} for Line at {line_restframe_wavelength:.3f}")
             # print(f"Tolerance: {tolerance:.3f}")
             # print(f"{'='*60}")
 
-            if component_index ==self.max_components - 1:
-                indice= np.argmin(
+            if component_index == self.max_components - 1:
+                indice = np.argmin(
                     (self.spectrum.processing_wavelengths.data - line_restframe_wavelength.value))
-                initial_guess= [self.spectrum.processing_flux.data[indice],
-                                line_restframe_wavelength.value,
-                                5]
+                initial_guess = [self.spectrum.processing_flux.data[indice],
+                                 line_restframe_wavelength.value,
+                                 5]
             else:
                 initial_guess = None
 
-            fit_result= self.fit_single_gaussian(initial_guess=initial_guess)
+            fit_result = self.fit_single_gaussian(initial_guess=initial_guess)
             if not fit_result['success']:
-                print(f"Component {component_index + 1} fit failed: {fit_result['error']}")
-                quit()
+                print(
+                    f"Component {component_index + 1} fit failed: {fit_result['error']}")
+                break
 
             # if not fit_result['success']:
             #     print(f"Component {component_index + 1} fit failed: {fit_result['error']}")
@@ -890,34 +1057,136 @@ class SpectralLineFitter:
             # self.print_fit_summary(fit_result, component_index)
 
             if plot_results:
-                is_residual=component_index > 0
-                self.plot_fit_result(fit_result, component_index, is_residual=is_residual)
+                is_residual = component_index > 0
+                self.plot_fit_result(
+                    fit_result, component_index, is_residual=is_residual)
 
             self.spectrum.processing_flux = astropy.nddata.NDDataArray(
-                data=self.spectrum.processing_flux.data - fit_result['fitted_curve'].data,
+                data=self.spectrum.processing_flux.data -
+                fit_result['fitted_curve'].data,
                 unit=self.spectrum.processing_flux.unit
             )
 
-            if plot_results and component_index< self.max_components - 1:
+            if plot_results and component_index < self.max_components - 1:
                 plt.figure(figsize=(20, 10))
-                plt.plot(self.spectrum.processing_wavelengths.data, self.spectrum.processing_flux.data, label=f"Residual Spectrum after Component {component_index + 1}", color='blue', alpha=0.5)
+                plt.plot(self.spectrum.processing_wavelengths.data, self.spectrum.processing_flux.data,
+                         label=f"Residual Spectrum after Component {component_index + 1}", color='blue', alpha=0.5)
                 plt.xlabel("Wavelength (Angstrom)", fontsize=14)
                 plt.ylabel("Flux (erg/cm^2/s/Angstrom)", fontsize=14)
-                plt.title(f"Residual Spectrum after Component {component_index + 1} Fitting", fontsize=16)
+                plt.title(
+                    f"Residual Spectrum after Component {component_index + 1} Fitting", fontsize=16)
                 plt.legend()
-                plt.xlim(self.spectrum.processing_wavelengths.data.min(), self.spectrum.processing_wavelengths.data.max())
-                flux_margin = 0.1 * np.nanmax(self.spectrum.processing_flux.data)
-                plt.ylim(np.nanmin(self.spectrum.processing_flux.data) - flux_margin, np.nanmax(self.spectrum.processing_flux.data) + flux_margin)
+                plt.xlim(self.spectrum.processing_wavelengths.data.min(),
+                         self.spectrum.processing_wavelengths.data.max())
+                flux_margin = 0.1 * \
+                    np.nanmax(self.spectrum.processing_flux.data)
+                plt.ylim(np.nanmin(self.spectrum.processing_flux.data) - flux_margin,
+                         np.nanmax(self.spectrum.processing_flux.data) + flux_margin)
                 plt.grid()
                 plt.show()
 
             if fit_result['is_within_tolerance']:
-                #print(f"Component {component_index} is within tolerance for line at {line_restframe_wavelength:.3f}.")
+                # print(f"Component {component_index} is within tolerance for line at {line_restframe_wavelength:.3f}.")
                 line_integrated_flux += fit_result['integrated_flux']
                 break
 
+        if len(self.fit_results) == 0:
+            print("No successful fits were made.")
+            return [], line_integrated_flux
 
-        if len(self.fit_results) ==0:
+    def iterative_gaussian_with_offset_fitting(self, line_restframe_wavelength, tolerance=10 * astropy.units.AA, plot_results=True):
+        """
+        Iteratively fits Gaussian components with an offset to a spectral line until the fit is successful or the maximum number of components is reached.
+        Parameters
+        ----------
+        line_restframe_wavelength : astropy.units.Quantity
+            The rest-frame wavelength of the spectral line to fit.
+        tolerance : astropy.units.Quantity, optional
+            The tolerance range for checking the fit (default is 10 * astropy.units.AA).
+        plot_results : bool, optional
+            If True, plots the fit results (default is True).
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - fit_result: list of dict
+                The fit results for each component, including the fitted parameters and the covariance matrix.
+            - line_integrated_flux: astropy.units.Quantity
+                The integrated flux of the spectral line.
+        """
+        self.fit_results = []
+        line_integrated_flux = 0 * self.spectrum.processing_flux.unit * \
+            self.spectrum.processing_wavelengths.unit
+
+        if not isinstance(line_restframe_wavelength, astropy.units.Quantity):
+            raise TypeError(
+                "line_restframe_wavelength must be an astropy.units.Quantity object.")
+
+        for component_index in range(self.max_components):
+
+            if component_index == self.max_components - 1:
+                indice = np.argmin(
+                    (self.spectrum.processing_wavelengths.data - line_restframe_wavelength.value))
+                initial_guess = [self.spectrum.processing_flux.data[indice],
+                                 line_restframe_wavelength.value,
+                                 2, np.median(self.spectrum.processing_flux.data)]
+
+            else:
+                initial_guess = None
+
+            fit_result = self.fit_single_gaussian_with_offset(
+                initial_guess=initial_guess)
+
+            if not fit_result['success']:
+                print(
+                    f"Component {component_index + 1} fit failed: {fit_result['error']}")
+                break
+
+            fit_result['component_index'] = component_index
+            fit_result['line_restframe_wavelength'] = line_restframe_wavelength
+            fit_result['is_within_tolerance'] = self.check_line(
+                line_restframe_wavelength,
+                fit_result['parameters']['mean'],
+                tolerance=tolerance
+            )
+            self.fit_results.append(fit_result)
+            # self.print_fit_summary(fit_result, component_index)
+            if plot_results:
+                is_residual = component_index > 0
+                self.plot_fit_result(
+                    fit_result, component_index, is_residual=is_residual)
+
+            self.spectrum.processing_flux = astropy.nddata.NDDataArray(
+                data=self.spectrum.processing_flux.data -
+                fit_result['fitted_curve'].data,
+                unit=self.spectrum.processing_flux.unit
+            )
+
+            if plot_results and component_index < self.max_components - 1:
+                plt.figure(figsize=(20, 10))
+                plt.plot(self.spectrum.processing_wavelengths.data, self.spectrum.processing_flux.data,
+                         label=f"Residual Spectrum after Component {component_index + 1}", color='blue', alpha=0.5)
+                plt.xlabel("Wavelength (Angstrom)", fontsize=14)
+                plt.ylabel("Flux (erg/cm^2/s/Angstrom)", fontsize=14)
+                plt.title(
+                    f"Residual Spectrum after Component {component_index + 1} Fitting", fontsize=16)
+                plt.legend()
+                plt.xlim(self.spectrum.processing_wavelengths.data.min(),
+                         self.spectrum.processing_wavelengths.data.max())
+                flux_margin = 0.1 * \
+                    np.nanmax(self.spectrum.processing_flux.data)
+                plt.ylim(np.nanmin(self.spectrum.processing_flux.data) - flux_margin,
+                         np.nanmax(self.spectrum.processing_flux.data) + flux_margin)
+                plt.grid()
+                plt.show()
+
+            if fit_result['is_within_tolerance']:
+                # print(f"Component {component_index} is within tolerance for line at {line_restframe_wavelength:.3f}.")
+                line_integrated_flux += fit_result['integrated_flux']
+                break
+
+        if len(self.fit_results) == 0:
             print("No successful fits were made.")
             return [], line_integrated_flux
 
@@ -942,7 +1211,7 @@ class SpectralLineFitter:
                 }
         return None
 
-    def plot_final_decomposition(self, line_restframe_wavelength,figure_name=None):
+    def plot_final_decomposition(self, line_restframe_wavelength, figure_name=None):
         """
         Plots the final decomposition of the spectral line with all fitted components.
 
@@ -954,35 +1223,43 @@ class SpectralLineFitter:
             The tolerance range for checking the fit (default is 10 * astropy.units.AA).
         """
 
-        self.spectrum.processing_wavelengths=self.spectrum.processing_wavelengths.convert_unit_to(astropy.units.AA)
-        self.spectrum.processing_flux=self.spectrum.processing_flux.convert_unit_to(astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA))
+        self.spectrum.processing_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+            astropy.units.AA)
+        self.spectrum.processing_flux = self.spectrum.processing_flux.convert_unit_to(
+            astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA))
 
-        subindices= np.where(
-            (self.spectrum.restframe_wavelengths.convert_unit_to(astropy.units.AA).data>=self.spectrum.processing_wavelengths.data.min()) &
-            (self.spectrum.restframe_wavelengths.convert_unit_to(astropy.units.AA).data<=self.spectrum.processing_wavelengths.data.max())
+        if not isinstance(self.spectrum.processing_wavelengths, astropy.nddata.NDDataArray):
+            return None
+        elif self.spectrum.processing_wavelengths.shape[0]==0:
+            print("No processing wavelengths available for plotting.")
+            return None
+
+        subindices = np.where(
+            (self.spectrum.restframe_wavelengths.convert_unit_to(astropy.units.AA).data >= self.spectrum.processing_wavelengths.data.min()) &
+            (self.spectrum.restframe_wavelengths.convert_unit_to(
+                astropy.units.AA).data <= self.spectrum.processing_wavelengths.data.max())
         )[0]
 
         plt.figure(figsize=(20, 10))
 
-        plt.step(self.spectrum.processing_wavelengths.data, self.spectrum.observed_flux_lambda.data[subindices], label="Observed Spectrum", color='blue', alpha=0.5, linewidth=1.6)
+        plt.step(self.spectrum.processing_wavelengths.data,
+                 self.spectrum.observed_flux_lambda.data[subindices], label="Observed Spectrum", color='blue', alpha=0.5, linewidth=1.6)
 
         colors = ['red', 'blue', 'green', 'orange', 'purple']
 
         for i, fit_result in enumerate(self.fit_results):
             if fit_result['success']:
 
-                params= [fit_result['parameters']['amplitude'].value,
-                         fit_result['parameters']['mean'].value,
-                            fit_result['parameters']['stddev'].value]
+                params = [fit_result['parameters']['amplitude'].value,
+                          fit_result['parameters']['mean'].value,
+                          fit_result['parameters']['stddev'].value]
 
-                component_flux= self.gaussian(
-                    self.spectrum.processing_wavelengths.data, *params
-                )
+                component_flux = fit_result['fitted_curve'].data
 
-                label= f"Component {fit_result['component_index']}"
+                label = f"Component {fit_result['component_index']}"
 
                 if fit_result['is_within_tolerance']:
-                    label+=f'(Line at {line_restframe_wavelength:.3f})'
+                    label += f'(Line at {line_restframe_wavelength:.3f})'
 
                 plt.plot(
                     self.spectrum.processing_wavelengths.data,
@@ -994,14 +1271,235 @@ class SpectralLineFitter:
 
         plt.xlabel("Wavelength (Angstrom)", fontsize=14)
         plt.ylabel("Flux (erg/cm^2/s/Angstrom)", fontsize=14)
-        plt.title(f"Final Decomposition for Line at {line_restframe_wavelength:.3f}", fontsize=16)
+        plt.title(
+            f"Final Decomposition for Line at {line_restframe_wavelength:.3f}", fontsize=16)
         plt.legend()
-        plt.xlim(self.spectrum.processing_wavelengths.data.min(), self.spectrum.processing_wavelengths.data.max())
-        flux_margin = 0.1 * np.nanmax(self.spectrum.observed_flux_lambda.data[subindices])
-        plt.ylim(np.nanmin(self.spectrum.observed_flux_lambda.data[subindices]) - flux_margin, np.nanmax(self.spectrum.observed_flux_lambda.data[subindices]) + flux_margin)
+        plt.xlim(self.spectrum.processing_wavelengths.data.min(),
+                 self.spectrum.processing_wavelengths.data.max())
+        flux_margin = 0.1 * \
+            np.nanmax(self.spectrum.observed_flux_lambda.data[subindices])
+        plt.ylim(np.nanmin(self.spectrum.observed_flux_lambda.data[subindices]) - flux_margin, np.nanmax(
+            self.spectrum.observed_flux_lambda.data[subindices]) + flux_margin)
         plt.grid()
-        plt.savefig(f"./fig/Final_Decomposition_{figure_name if figure_name else 'spectrum'}.png")
+        plt.savefig(
+            f"{figure_name}.png" if figure_name else "final_decomposition.png")
         plt.close()
 
 
+class Spectrum_Catalog:
+    def __init__(self):
+        self.catalog = collections.defaultdict(lambda: {
+            'survey_id': None,
+            'prism_filepath': None,
+            'prism_redshift': None,
+            'grating_filepaths': {},
+            'grating_redshifts': {},
+            'file_count': 0,
+            'available_filters': set()
+        })
 
+        self.filepath_pattern_re = r'^/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^_]+)_([^_]+)_([a-zA-Z0-9_]+)\.spec.fits$'
+
+    def process_files(self, filepath_list, DJA_Catalog_DataFrame=None):
+        """
+        Process a list of file paths and populate the catalog with spectrum information.
+
+        Parameters
+        ----------
+        filepath_list : list of str
+            A list of file paths to process.
+
+        DJA_Catalog_DataFrame : pd.DataFrame, optional
+            A DataFrame containing the catalog data, used to load redshift information for prism spectra.
+        If provided, it will be used to load the redshift for prism spectra.
+        If None, the redshift will not be loaded for prism spectra.
+
+        Returns
+        -------
+        None
+        """
+
+        for filepath_str in tqdm.tqdm(filepath_list):
+            match = re.match(self.filepath_pattern_re, filepath_str)
+
+            if match:
+                re_group = match.groups()
+                survey_name = re_group[4]
+                filter_name = re_group[5]
+                survey_id_subid = f"{survey_name}_{re_group[6]}"
+
+                entry = self.catalog[survey_id_subid]
+                entry['survey_id'] = survey_name
+                entry['id'] = survey_id_subid
+                entry['file_count'] += 1
+                entry['available_filters'].add(filter_name)
+
+                if filter_name == 'prism-clear':
+                    entry['prism_filepath'] = filepath_str
+                    entry['prism_redshift'] = Load_Spectrum_Redshift(
+                        filepath_str, DJA_Catalog_DataFrame)
+                else:
+                    entry['grating_filepaths'][filter_name] = filepath_str
+                    entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
+                        filepath_str, DJA_Catalog_DataFrame)
+
+    def load_spectrum_info(self, survey_id_subid):
+        """
+        Load the spectrum information for a given survey_id_subid.
+
+        Parameters
+        ----------
+        survey_id_subid : str
+            The survey_id_subid of the spectrum to retrieve.
+
+        Returns
+        -------
+        dict
+            A dictionary containing the spectrum information, or None if not found.
+        """
+        return dict(self.catalog.get(survey_id_subid, None))
+
+    def load_spectrums_with_prism(self):
+        """
+        Load a list of survey_id_subid that have prism spectra.
+
+        Returns
+        -------
+        dict
+            A dictionary with survey_id_subid as keys and their corresponding prism file paths as values.
+        """
+        return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is not None}
+
+    def load_spectrums_with_grating(self):
+        """
+        Get a list of survey_id_subid that have grating spectra.
+
+        Returns
+        -------
+        dict
+            A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+        """
+        return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['grating_filepaths']}
+
+    def load_spectrums_missing_prism(self):
+        """
+        Get a list of survey_id_subid that do not have prism spectra.
+
+        Returns
+        -------
+        dict
+            A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+        """
+        return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is None}
+
+    def get_summary_stats(self):
+        """
+        Get summary statistics of the catalog.
+
+        Returns
+        -------
+        dict
+            A dictionary containing the total number of spectra, number of unique objects, and number of available filters.
+        """
+        all_filters = set()
+
+        total_objects = len(self.catalog)
+        with_prism = len(self.load_spectrums_with_prism())
+        with_grating = len(self.load_spectrums_with_grating())
+        without_prism = len(self.load_spectrums_missing_prism())
+        total_spectra = sum(entry['file_count']
+                            for entry in self.catalog.values())
+        total_grating_spectra = sum(
+            len(entry['grating_filepaths']) for entry in self.catalog.values())
+        total_prism_spectra = sum(
+            1 for entry in self.catalog.values() if entry['prism_filepath'] is not None)
+
+        for entry in self.catalog.values():
+            all_filters.update(entry['available_filters'])
+
+        return {
+            'total_objects': total_objects,
+            'with_prism': with_prism,
+            'without_prism': without_prism,
+            'with_grating': with_grating,
+            'total_spectra': total_spectra,
+            'total_prism_spectra': total_prism_spectra,
+            'total_grating_spectra': total_grating_spectra
+        }
+
+    def to_dataframe(self):
+        """
+        Convert the catalog to a pandas DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame containing the spectrum information.
+        """
+        data = []
+
+        for survey_id_subid, entry in self.catalog.items():
+            row = {
+                'survey_id_subid': survey_id_subid,
+                'survey_id': entry['survey_id'],
+                'prism_filepath': entry['prism_filepath'],
+                'prism_redshift': entry['prism_redshift'],
+                'grating_filepaths': entry['grating_filepaths'],
+                'grating_redshifts': entry['grating_redshifts'],
+                'file_count': entry['file_count'],
+                'available_filters': ', '.join(entry['available_filters'])
+            }
+
+            for filter_name, filepath in entry['grating_filepaths'].items():
+                row[f'filter_{filter_name}_filepath'] = filepath
+
+            data.append(row)
+
+        return pd.DataFrame(data)
+
+    def save_catalog_to_csv(self, filename):
+        """
+        Save the catalog to a CSV file.
+
+        Parameters
+        ----------
+        filename : str
+            The name of the file to save the catalog to.
+        """
+        df = self.to_dataframe()
+        df.to_csv(filename, index=False)
+
+    def find_complete_objects(self, required_filters=None):
+        """
+        Find objects that have all required filters and a prism file.
+
+        Parameters
+        ----------
+        required_filters : list of str, optional
+            A list of filter names that must be present for an object to be considered complete.
+
+        Returns
+        -------
+        dict
+            A dictionary with survey_id_subid as keys and their corresponding catalog entries as values.
+        """
+        if required_filters is None:
+            required_filters = set()
+
+        complete_objects = {}
+        for survey_id_subid, entry in self.catalog.items():
+            if (entry['prism_file'] is not None and required_filters.issubset(entry['available_filters'])):
+                complete_objects[survey_id_subid] = entry
+
+        return complete_objects
+
+    def __repr__(self):
+        """
+        String representation of the Spectrum_Catalog object.
+
+        Returns
+        -------
+        str
+            A string representation of the catalog.
+        """
+        return f"Spectrum_Catalog with {len(self.catalog)} objects, {len(self.load_spectrums_with_prism())} with prism spectra, and {len(self.load_spectrums_with_grating())} with grating spectra."

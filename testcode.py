@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import astropy
 import astropy.io as io
 import astropy.units as units
-import specutils
 from tqdm import tqdm
 
 import inspect
@@ -17,6 +16,9 @@ import inspect
 import FunctionLib as FL
 import warnings
 warnings.filterwarnings("ignore")
+fig_save_path=os.path.expanduser('~/DustCurve/figures/')
+if not os.path.exists(fig_save_path):
+    os.makedirs(fig_save_path)
 
 
 DJA_File_Path_str=os.path.expanduser('~/DJAv4/')
@@ -44,7 +46,7 @@ for file_name_str in tqdm((DJA_File_List_All[0:2000])):
     if file_name_str.endswith('.fits'):
         if file_name_str.split('/')[-1].split('_')[1]=='prism-clear':
             continue
-        redshift_quantity=FL.Load_Redshift(DJA_Catalog_DataFrame, file_name_str.split('/')[-1])
+        redshift_quantity=FL.Load_Spectrum_Redshift( file_name_str.split('/')[-1], DJA_Catalog_DataFrame)
         if isinstance(redshift_quantity, IndexError):
             continue
         if np.isnan(redshift_quantity):
@@ -72,12 +74,12 @@ for file_name_str in tqdm((DJA_File_List_All[0:2000])):
 
         fitter=FL.SpectralLineFitter(spectrum, 4863.0 * units.Angstrom, max_components=2, max_iterations=100000)
 #figname=f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png'
-        fitter.iterative_gaussian_fitting(
+        fitter.iterative_gaussian_with_offset_fitting(
     line_restframe_wavelength=4863.0 * units.Angstrom,
-    tolerance=10 * units.Angstrom,
+    tolerance=1 * units.Angstrom,
     plot_results=False
 )
         if fitter.fit_results is None:
             continue
-        fitter.plot_final_decomposition(4863.0 * units.Angstrom,figure_name=f'{file_name_str.split("/")[-1].split(".")[0]}_fit')
-
+        fitter.plot_final_decomposition(4863.0 * units.Angstrom,figure_name=
+                                        os.path.join(fig_save_path, f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png'))
