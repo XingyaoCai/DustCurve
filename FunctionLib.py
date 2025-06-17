@@ -1492,7 +1492,77 @@ class Spectrum_Catalog:
                 complete_objects[survey_id_subid] = entry
 
         return complete_objects
+    def load_catalog_from_csv(self, filename):
+        """
+        Load the catalog from a CSV file previously saved by save_catalog_to_csv().
 
+        Parameters
+        ----------
+        filename : str
+            The name of the CSV file to load the catalog from.
+
+        Returns
+        -------
+        None
+            The method populates self.catalog with the data from the CSV file.
+        """
+        import pandas as pd
+        import ast
+
+        # Read the CSV file
+        df = pd.read_csv(filename)
+
+        # Clear existing catalog
+        self.catalog.clear()
+
+        # Process each row in the DataFrame
+        for _, row in df.iterrows():
+            survey_id_subid = row['survey_id_subid']
+
+            # Initialize the catalog entry
+            entry = self.catalog[survey_id_subid]
+            entry['survey_id'] = row['survey_id']
+            entry['id'] = survey_id_subid
+            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(row['prism_filepath']) else None
+            entry['prism_redshift'] = row['prism_redshift'] if pd.notna(row['prism_redshift']) else None
+            entry['file_count'] = int(row['file_count'])
+
+            # Parse available_filters from string back to set
+            if pd.notna(row['available_filters']) and row['available_filters']:
+                entry['available_filters'] = set(row['available_filters'].split(', '))
+            else:
+                entry['available_filters'] = set()
+
+            # Parse grating_filepaths from string representation back to dict
+            if pd.notna(row['grating_filepaths']) and row['grating_filepaths']:
+                try:
+                    # Try to evaluate the string as a Python dictionary
+                    entry['grating_filepaths'] = ast.literal_eval(row['grating_filepaths'])
+                except (ValueError, SyntaxError):
+                    entry['grating_filepaths'] = {}
+            else:
+                entry['grating_filepaths'] = {}
+
+            # Parse grating_redshifts from string representation back to dict
+            if pd.notna(row['grating_redshifts']) and row['grating_redshifts']:
+                try:
+                    # Try to evaluate the string as a Python dictionary
+                    entry['grating_redshifts'] = ast.literal_eval(row['grating_redshifts'])
+                except (ValueError, SyntaxError):
+                    entry['grating_redshifts'] = {}
+            else:
+                entry['grating_redshifts'] = {}
+
+            # Also look for individual filter columns (filter_{name}_filepath)
+            # This provides a backup method in case the dict parsing fails
+            for col in df.columns:
+                if col.startswith('filter_') and col.endswith('_filepath'):
+                    filter_name = col.replace('filter_', '').replace('_filepath', '')
+                    if pd.notna(row[col]):
+                        entry['grating_filepaths'][filter_name] = row[col]
+                        entry['available_filters'].add(filter_name)
+
+              
     def __repr__(self):
         """
         String representation of the Spectrum_Catalog object.
