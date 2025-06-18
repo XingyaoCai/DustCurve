@@ -15,6 +15,69 @@ import inspect
 import re
 import collections
 import tqdm
+import ast
+
+
+def Load_Spectrum_From_Fits(file_path, redshift=None, index_in_hdulist=1, wavelength_key='wave', wavelength_unit='micron', flux_key='flux', flux_unit='uJy', error_key='error', error_unit='uJy'):
+    """
+    Load a spectrum from DJA catalog from the given file path, packed it into the Spectrum_1d class, and return the class instance.
+
+    Parameters
+    ----------
+    file_path : str
+        The path to the spectrum file.
+    redshift : astropy.units.Quantity, optional
+        The redshift value to apply to the spectrum. If not provided, the redshift from the file will be used.
+
+    Returns
+    -------
+    Spectrum_1d
+        An instance of the Spectrum_1d class containing the loaded spectrum data.
+    """
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"The file {file_path} does not exist.")
+    if not file_path.endswith('.fits'):
+        raise ValueError(f"The file {file_path} is not a valid FITS file.")
+
+    with astropy.io.fits.open(file_path) as hdulist:
+        if index_in_hdulist >= len(hdulist):
+            raise IndexError(
+                f"Index {index_in_hdulist} is out of bounds for the HDU list.")
+
+        data = hdulist[index_in_hdulist].data
+
+        wavelength_data = data[wavelength_key]
+        flux_data = data[flux_key]
+
+        wavelength_unit = astropy.units.Unit(wavelength_unit)
+        flux_unit = astropy.units.Unit(flux_unit)
+
+        if redshift is None:
+            redshift = Load_Spectrum_Redshift(
+                file_path, pd.read_csv(os.path.expanduser('~/DustCurve/DJAv4Catalog.csv')))
+        if isinstance(redshift, str):
+            redshift = float(redshift)
+        elif isinstance(redshift, (int, float)):
+            redshift = astropy.units.Quantity(
+                redshift, unit=astropy.units.dimensionless_unscaled)
+        elif isinstance(redshift, astropy.units.Quantity):
+            if redshift.unit.is_equivalent(astropy.units.dimensionless_unscaled):
+                redshift = redshift.to_value(
+                    astropy.units.dimensionless_unscaled)
+            else:
+                raise ValueError("Redshift must be a dimensionless quantity.")
+        else:
+            raise TypeError(
+                "Redshift must be a string, int, float, or astropy.units.Quantity.")
+
+        spectrum = Spectrum_1d(
+            observed_wavelengths=wavelength_data * wavelength_unit,
+            observed_flux_nu=flux_data * flux_unit,
+            redshift=redshift
+        )
+
+        return spectrum
 
 
 def Load_Spectrum_Redshift(filepath, catalog):
@@ -720,6 +783,89 @@ class SpectralLineFitter:
         else:
             return amplitude * np.exp(-0.5 * ((x - mean) / stddev) ** 2) + offset
 
+    def power_law(self, x, amplitude, exponent):
+        """
+        Power law function for fitting.
+        Parameters
+        ----------
+            x : array-like
+                The independent variable (wavelengths).
+            amplitude : float
+                The amplitude of the power law.
+            exponent : float
+            The exponent of the power law.
+        Returns
+        -------
+            array-like
+                The values of the power law function at x.
+        """
+        if isinstance(x, astropy.nddata.NDDataArray):
+            x = x.data
+            return astropy.nddata.NDDataArray(
+                data=amplitude * (x ** exponent),
+                unit=x.unit
+            )
+        elif isinstance(x, astropy.units.Quantity):
+            return amplitude * (x.value ** exponent) * x.unit
+        else:
+            return amplitude * (x ** exponent)
+
+    def fit_power_law(self, initial_guess=None):
+        """
+        Fits a power law function to the spectrum data, the initial guess will be generated based on the observed fluxes.
+        Parameters
+        ----------
+        initial_guess : list, optional
+            A list containing the initial guesses for the power law parameters [amplitude, exponent]. If None, the initial guess will be generated based on the observed fluxes (default is None).
+        Returns
+        -------
+        dict
+            A dictionary containing the fit results, including the fitted parameters and the covariance matrix.
+        """
+        try:
+            # Extract observed wavelengths and fluxes
+            obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+                astropy.units.AA).data
+            obs_flux_lambda = self.spectrum.processing_flux.data
+
+            # Initial guess for the power law parameters
+            if initial_guess is None:
+                # Use log-log linear regression for better initial guess
+                valid_mask = (obs_wavelengths > 0) & (obs_flux_lambda > 0)
+
+                amplitude_guess = obs_flux_lambda[np.argmin(obs_wavelengths)]
+                exponent_guess = -1.0
+                initial_guess = [amplitude_guess, exponent_guess]
+
+            # Fit the power law using scipy.optimize.curve_fit
+            popt, pcov = scipy.optimize.curve_fit(self.power_law,
+                                                obs_wavelengths,
+                                                obs_flux_lambda,
+                                                p0=initial_guess,
+                                                maxfev=self.max_iterations*100)
+
+            y_fit = self.power_law(obs_wavelengths, *popt)
+
+            return {
+                'success': True,
+                'parameters': {
+                    'amplitude': popt[0] * self.spectrum.processing_flux.unit,
+                    'decay': popt[1]
+                    },
+                'fitted_curve': astropy.nddata.NDDataArray(
+                    data=y_fit,
+                    unit=self.spectrum.processing_flux.unit
+                    ),
+                'covariance': pcov,
+                'integrated_flux': None,
+                'integration_error': None
+                }
+        except Exception as e:
+                return {
+                    'success': False,
+                    'error': str(e)
+                }
+
     def fit_single_gaussian(self, initial_guess=None):
         """
         Fits a single Gaussian to the spectrum data, the initial guess will be generated based on the observed fluxes.
@@ -839,8 +985,8 @@ class SpectralLineFitter:
 
             y_fit = self.gaussian_with_offset(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian_with_offset, obs_wavelengths.min(), obs_wavelengths.max(
-            ), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
+            ), args=tuple(popt[0:3]), epsabs=0))* self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
@@ -864,6 +1010,68 @@ class SpectralLineFitter:
                 'success': False,
                 'error': str(e)
             }
+
+
+    def fit_exponential(self, initial_guess=None):
+        """
+        Fits an exponential function to the spectrum data, the initial guess will be generated based on the observed fluxes.
+
+        Parameters
+        ----------
+        initial_guess : list, optional
+            A list containing the initial guesses for the exponential parameters [amplitude, decay]. If None, the initial guess will be generated based on the observed fluxes (default is None).
+
+        Returns
+        -------
+        dict
+            A dictionary containing the fit results, including the fitted parameters and the covariance matrix.
+        """
+
+        try:
+            # Extract observed wavelengths and fluxes
+            obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
+                astropy.units.AA).data
+            obs_flux_lambda = self.spectrum.processing_flux.data
+
+            # Initial guess for the exponential parameters
+            if initial_guess is None:
+                amplitude_guess= obs_flux_lambda[np.argmin(obs_wavelengths)]
+                decay_guess = -0.5
+
+            initial_guess= [amplitude_guess, decay_guess]
+
+            # Fit the exponential using scipy.optimize.curve_fit
+            popt, pcov = scipy.optimize.curve_fit(self.exponential,
+                                                   obs_wavelengths,
+                                                   obs_flux_lambda,
+                                                   p0=initial_guess,
+                                                   maxfev=self.max_iterations)
+
+            y_fit = self.exponential(obs_wavelengths, *popt)
+
+            #dont need integrated flux for exponential fit
+
+            return {
+                'success': True,
+                'parameters': {
+                    'amplitude': popt[0] * self.spectrum.processing_flux.unit,
+                    'decay': popt[1]
+                },
+                'fitted_curve': astropy.nddata.NDDataArray(
+                    data=y_fit,
+                    unit=self.spectrum.processing_flux.unit
+                ),
+                'covariance': pcov,
+                'integrated_flux': None,
+                'integration_error': None
+                }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
 
     def check_line(self, line_restframe_wavelength, mean_fit, tolerance=10 * astropy.units.AA):
         """
@@ -1230,7 +1438,7 @@ class SpectralLineFitter:
 
         if not isinstance(self.spectrum.processing_wavelengths, astropy.nddata.NDDataArray):
             return None
-        elif self.spectrum.processing_wavelengths.shape[0]==0:
+        elif self.spectrum.processing_wavelengths.shape[0] == 0:
             print("No processing wavelengths available for plotting.")
             return None
 
@@ -1343,6 +1551,58 @@ class Spectrum_Catalog:
                     entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
                         filepath_str, DJA_Catalog_DataFrame)
 
+    def load_from_csv(self, csv_filepath):
+        """
+        Load catalog data from a CSV file.
+
+        Parameters
+        ----------
+        csv_filepath : str
+            Path to the CSV file to load.
+
+        Returns
+        -------
+        None
+        """
+        df = pd.read_csv(csv_filepath)
+
+        # Clear existing catalog
+        self.catalog = collections.defaultdict(lambda: {
+            'survey_id': None,
+            'prism_filepath': None,
+            'prism_redshift': None,
+            'grating_filepaths': {},
+            'grating_redshifts': {},
+            'file_count': 0,
+            'available_filters': set()
+        })
+
+        for _, row in df.iterrows():
+            survey_id_subid = row['survey_id_subid']
+
+            # Basic information
+            entry = self.catalog[survey_id_subid]
+            entry['survey_id'] = row['survey_id']
+            entry['id'] = survey_id_subid
+            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(
+                row['prism_filepath']) else None
+            entry['prism_redshift'] = row['prism_redshift'] if pd.notna(
+                row['prism_redshift']) else None
+            entry['file_count'] = int(row['file_count'])
+            entry['available_filters'] = set(row['available_filters'].split(
+                ',')) if pd.notna(row['available_filters']) else set()
+
+            # Handle grating_filepaths - keep as dict if already dict
+            if isinstance(row['available_filters'], dict):
+                for _, filter_name in row['available_filters'].items():
+                    print(f"Processing filter: {filter_name}")
+                    if filter_name == 'prism-clear':
+                        continue
+                    entry['grating_filepaths'][filter_name] = row['grating_filepaths'].get(
+                        filter_name, None)
+                    entry['grating_redshifts'][filter_name] = row['grating_redshifts'].get(
+                        filter_name, None)
+
     def load_spectrum_info(self, survey_id_subid):
         """
         Load the spectrum information for a given survey_id_subid.
@@ -1429,12 +1689,12 @@ class Spectrum_Catalog:
 
     def to_dataframe(self):
         """
-        Convert the catalog to a pandas DataFrame.
+        Convert the catalog to a pandas DataFrame with dictionaries preserved.
 
         Returns
         -------
         pd.DataFrame
-            A DataFrame containing the spectrum information.
+            A DataFrame containing the spectrum information with dictionaries and sets preserved.
         """
         data = []
 
@@ -1444,15 +1704,13 @@ class Spectrum_Catalog:
                 'survey_id': entry['survey_id'],
                 'prism_filepath': entry['prism_filepath'],
                 'prism_redshift': entry['prism_redshift'],
+                # Keep as dict
                 'grating_filepaths': entry['grating_filepaths'],
+                # Keep as dict
                 'grating_redshifts': entry['grating_redshifts'],
                 'file_count': entry['file_count'],
-                'available_filters': ', '.join(entry['available_filters'])
+                'available_filters': entry['available_filters']  # Keep as set
             }
-
-            for filter_name, filepath in entry['grating_filepaths'].items():
-                row[f'filter_{filter_name}_filepath'] = filepath
-
             data.append(row)
 
         return pd.DataFrame(data)
@@ -1468,6 +1726,76 @@ class Spectrum_Catalog:
         """
         df = self.to_dataframe()
         df.to_csv(filename, index=False)
+
+    def save_catalog_to_pkl(self, filename):
+        """
+        Save the catalog to a pickle file.
+
+        Parameters
+        ----------
+        filename : str
+            The name of the file to save the catalog to.
+        """
+        df = self.to_dataframe()
+        df.to_pickle(filename)
+
+    def load_from_pkl(self, pkl_filepath):
+        """
+        Load catalog data from a pickle file.
+
+        Parameters
+        ----------
+        pkl_filepath : str
+            Path to the pickle file to load.
+
+        Returns
+        -------
+        None
+        """
+        if not os.path.exists(pkl_filepath):
+            raise FileNotFoundError(f"The file {pkl_filepath} does not exist.")
+        if not pkl_filepath.endswith('.pkl'):
+            raise ValueError(
+                f"The file {pkl_filepath} is not a valid pickle file.")
+
+        df = pd.read_pickle(pkl_filepath)
+
+        # Clear existing catalog
+        self.catalog = collections.defaultdict(lambda: {
+            'survey_id': None,
+            'prism_filepath': None,
+            'prism_redshift': None,
+            'grating_filepaths': {},
+            'grating_redshifts': {},
+            'file_count': 0,
+            'available_filters': set()
+        })
+
+        for _, row in df.iterrows():
+            survey_id_subid = row['survey_id_subid']
+
+            # Basic information
+            entry = self.catalog[survey_id_subid]
+            entry['survey_id'] = row['survey_id']
+            entry['id'] = survey_id_subid
+            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(
+                row['prism_filepath']) else None
+            entry['prism_redshift'] = row['prism_redshift'] * \
+                astropy.units.dimensionless_unscaled if pd.notna(
+                    row['prism_redshift']) else None
+            entry['file_count'] = int(row['file_count'])
+            entry['available_filters'] = set(filter for filter in row['available_filters']) if pd.notna(
+                row['available_filters']) else set()
+
+            # Handle grating_filepaths - keep as dict if already dict
+            if isinstance(row['available_filters'], set):
+                for filter_name in row['available_filters']:
+                    if filter_name == 'prism-clear':
+                        continue
+                    entry['grating_filepaths'][filter_name] = row['grating_filepaths'].get(
+                        filter_name, None)
+                    entry['grating_redshifts'][filter_name] = row['grating_redshifts'].get(
+                        filter_name, None)
 
     def find_complete_objects(self, required_filters=None):
         """
@@ -1485,91 +1813,24 @@ class Spectrum_Catalog:
         """
         if required_filters is None:
             required_filters = set()
+        else:
+            required_filters = set(required_filters)
 
         complete_objects = {}
         for survey_id_subid, entry in self.catalog.items():
-            if (entry['prism_file'] is not None and required_filters.issubset(entry['available_filters'])):
+            if (entry['prism_filepath'] is not None and required_filters.issubset(entry['available_filters'])):
                 complete_objects[survey_id_subid] = entry
 
         return complete_objects
-    def load_catalog_from_csv(self, filename):
+
+    def catalog_iterator(self):
         """
-        Load the catalog from a CSV file previously saved by save_catalog_to_csv().
+        Returns an iterator over the catalog entries.
 
-        Parameters
-        ----------
-        filename : str
-            The name of the CSV file to load the catalog from.
-
-        Returns
+        Yields
         -------
-        None
-            The method populates self.catalog with the data from the CSV file.
+        tuple
+            A tuple containing the survey_id_subid and the corresponding catalog entry.
         """
-        import pandas as pd
-        import ast
-
-        # Read the CSV file
-        df = pd.read_csv(filename)
-
-        # Clear existing catalog
-        self.catalog.clear()
-
-        # Process each row in the DataFrame
-        for _, row in df.iterrows():
-            survey_id_subid = row['survey_id_subid']
-
-            # Initialize the catalog entry
-            entry = self.catalog[survey_id_subid]
-            entry['survey_id'] = row['survey_id']
-            entry['id'] = survey_id_subid
-            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(row['prism_filepath']) else None
-            entry['prism_redshift'] = row['prism_redshift'] if pd.notna(row['prism_redshift']) else None
-            entry['file_count'] = int(row['file_count'])
-
-            # Parse available_filters from string back to set
-            if pd.notna(row['available_filters']) and row['available_filters']:
-                entry['available_filters'] = set(row['available_filters'].split(', '))
-            else:
-                entry['available_filters'] = set()
-
-            # Parse grating_filepaths from string representation back to dict
-            if pd.notna(row['grating_filepaths']) and row['grating_filepaths']:
-                try:
-                    # Try to evaluate the string as a Python dictionary
-                    entry['grating_filepaths'] = ast.literal_eval(row['grating_filepaths'])
-                except (ValueError, SyntaxError):
-                    entry['grating_filepaths'] = {}
-            else:
-                entry['grating_filepaths'] = {}
-
-            # Parse grating_redshifts from string representation back to dict
-            if pd.notna(row['grating_redshifts']) and row['grating_redshifts']:
-                try:
-                    # Try to evaluate the string as a Python dictionary
-                    entry['grating_redshifts'] = ast.literal_eval(row['grating_redshifts'])
-                except (ValueError, SyntaxError):
-                    entry['grating_redshifts'] = {}
-            else:
-                entry['grating_redshifts'] = {}
-
-            # Also look for individual filter columns (filter_{name}_filepath)
-            # This provides a backup method in case the dict parsing fails
-            for col in df.columns:
-                if col.startswith('filter_') and col.endswith('_filepath'):
-                    filter_name = col.replace('filter_', '').replace('_filepath', '')
-                    if pd.notna(row[col]):
-                        entry['grating_filepaths'][filter_name] = row[col]
-                        entry['available_filters'].add(filter_name)
-
-              
-    def __repr__(self):
-        """
-        String representation of the Spectrum_Catalog object.
-
-        Returns
-        -------
-        str
-            A string representation of the catalog.
-        """
-        return f"Spectrum_Catalog with {len(self.catalog)} objects, {len(self.load_spectrums_with_prism())} with prism spectra, and {len(self.load_spectrums_with_grating())} with grating spectra."
+        for index in self.catalog.keys():
+            yield index, self.catalog[index]

@@ -1,85 +1,45 @@
+import warnings
+import FunctionLib as FL
+import inspect
+from tqdm import tqdm
+import astropy
 import wave
 from matplotlib.image import resample
 import numpy as np
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+from collections import defaultdict
+import re
+import scipy
+
+mpl.rcParams['font.family'] = 'serif'
 
 
-import astropy
-import astropy.io as io
-import astropy.units as units
-from tqdm import tqdm
-
-import inspect
-
-import FunctionLib as FL
-import warnings
 warnings.filterwarnings("ignore")
-fig_save_path=os.path.expanduser('~/DustCurve/figures/')
-if not os.path.exists(fig_save_path):
-    os.makedirs(fig_save_path)
+
+DJAv4Catalog=FL.Spectrum_Catalog()
+DJAv4Catalog.load_from_pkl(os.path.expanduser('~/DustCurve/spectrum_catalog.pkl'))
 
 
-DJA_File_Path_str=os.path.expanduser('~/DJAv4/')
+i=0
+for id_subid, catalog in DJAv4Catalog.catalog_iterator():
+    i+=1
+    if not catalog.get('prism_filepath'):
+        continue
 
-DJA_Catalog_DataFrame=pd.read_csv(os.path.expanduser('~/DustCurve/DJAv4Catalog.csv'))
-DJA_File_List_All=[]
-number_file=0
+    spectrum=FL.Load_Spectrum_From_Fits(catalog['prism_filepath'], redshift=catalog['prism_redshift'])
+    spectrum.set_boundarys(1268*astropy.units.Angstrom, 2580*astropy.units.Angstrom)
 
-if os.path.exists(DJA_File_Path_str):
-    for root_dir in os.listdir(DJA_File_Path_str):
-        if root_dir.startswith('.'):
-            continue
-        Root_File_Path_str=os.path.join(DJA_File_Path_str, root_dir)
-        DJA_File_List=np.array(os.listdir(Root_File_Path_str))
-        number_file+=len(DJA_File_List)
-        for file_name in DJA_File_List:
-            if file_name.endswith('.fits'):
-                DJA_File_List_All.append(os.path.join(Root_File_Path_str, file_name))
+    Fitter=FL.SpectralLineFitter(spectrum, 4863*astropy.units.Angstrom)
 
-print('Number of files in DJAv4:', number_file)
-
-redshift_is=np.where(DJA_Catalog_DataFrame['z']!= np.nan)[0]
-
-for file_name_str in tqdm((DJA_File_List_All[0:2000])):
-    if file_name_str.endswith('.fits'):
-        if file_name_str.split('/')[-1].split('_')[1]=='prism-clear':
-            continue
-        redshift_quantity=FL.Load_Spectrum_Redshift( file_name_str.split('/')[-1], DJA_Catalog_DataFrame)
-        if isinstance(redshift_quantity, IndexError):
-            continue
-        if np.isnan(redshift_quantity):
-            continue
-        if redshift_quantity < 2* astropy.units.dimensionless_unscaled:
-            continue
+    exp_fit_result=Fitter.fit_exponential()
+    if exp_fit_result.get('error'):
+        print(f'Exponential fit error for {id_subid}: {exp_fit_result["error"]}')
+        continue
+    print(f'Exponential fit result for {id_subid}:'+str(exp_fit_result['parameters']))
 
 
-        line_to_fit_restframe_wavelength_quantity=4863.0 * units.Angstrom
-
-        hdul=io.fits.open(os.path.join(DJA_File_Path_str, file_name_str))
-
-        wave= hdul[1].data['wave']* units.micron
-        flux= hdul[1].data['flux']*units.mJy
-
-        if wave[0]/(1+redshift_quantity.value)>0.45* units.micron:
-            continue
-
-        spectrum= FL.Spectrum_1d(
-            observed_wavelengths=wave,
-            redshift=redshift_quantity,
-            observed_flux_nu=flux
-        )
-        spectrum.set_boundarys(lower_boundary=0.48 * units.micron, upper_boundary=0.49 * units.micron)
-
-        fitter=FL.SpectralLineFitter(spectrum, 4863.0 * units.Angstrom, max_components=2, max_iterations=100000)
-#figname=f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png'
-        fitter.iterative_gaussian_with_offset_fitting(
-    line_restframe_wavelength=4863.0 * units.Angstrom,
-    tolerance=1 * units.Angstrom,
-    plot_results=False
-)
-        if fitter.fit_results is None:
-            continue
-        fitter.plot_final_decomposition(4863.0 * units.Angstrom,figure_name=
-                                        os.path.join(fig_save_path, f'{file_name_str.split("/")[-1].split(".")[0]}_fit.png'))
+    if i>10:
+        break
