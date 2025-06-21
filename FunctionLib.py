@@ -612,9 +612,18 @@ class Spectrum_1d:
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
-    def show(self):
-        """Display the processed spectrum."""
-        plt.figure(figsize=(20, 10))
+    def show(self,if_show=True):
+        """Display the processed spectrum.
+        Parameters
+        ----------
+        if_show : bool, optional
+            If True, the plot will be displayed. Default is True.
+        Returns
+        -------
+        fig, ax : matplotlib.figure.Figure, matplotlib.axes.Axes
+
+        """
+        fig,ax=plt.subplots(figsize=(20, 10))
         if self.processing_wavelengths is not None and self.processing_flux is not None:
             if isinstance(self.processing_wavelengths, astropy.nddata.NDDataArray):
                 wave_data = self.processing_wavelengths.data
@@ -630,13 +639,30 @@ class Spectrum_1d:
                 flux_data = self.processing_flux
                 flux_unit = None
 
-            plt.plot(wave_data, flux_data, label='Processed Spectrum')
-            plt.xlabel(
+            ax.plot(wave_data, flux_data, label='Processed Spectrum', color='blue')
+            ax.set_xlabel(
                 f'Wavelength ({wave_unit})' if wave_unit else 'Wavelength')
-            plt.ylabel(f'Flux ({flux_unit})' if flux_unit else 'Flux')
-            plt.title(f'Spectrum at Redshift {self.redshift.value:.3f}')
-            plt.legend()
-            plt.show()
+            ax.set_ylabel(f'Flux ({flux_unit})' if flux_unit else 'Flux')
+            ax.set_title(f'Spectrum at Redshift {self.redshift.value:.3f}')
+            ax.legend()
+            if if_show:
+                plt.show()
+        return fig, ax
+
+    def dual_boundarys(self):
+        """
+        Return the lower and upper boundaries of the spectrum.
+        Returns
+        -------
+        tuple
+            A tuple containing the lower and upper boundaries of the spectrum.
+            If no boundaries are set, returns (None, None).
+        """
+        if self.restframe_wavelengths is not None:
+            lower_boundary = self.restframe_wavelengths.data.min() * self.restframe_wavelengths.unit
+            upper_boundary = self.restframe_wavelengths.data.max() * self.restframe_wavelengths.unit
+            return lower_boundary, upper_boundary
+        return None, None
 
     def __repr__(self):
         """String representation of the spectrum object."""
@@ -655,7 +681,7 @@ class Spectrum_1d:
                 wave_data_repr = f"Empty {self.restframe_wavelengths.unit}"
                 num_points_str = "0"
 
-        return f"Spectrum_1d(z={self.redshift.value:.3f}, λ_obs={wave_data_repr}, {num_points_str} points)"
+        return f"Spectrum_1d(z={self.redshift.value:.3f}, λ_res={wave_data_repr}, {num_points_str} points)"
 
 
 class SpectralLineFitter:
@@ -915,8 +941,7 @@ class SpectralLineFitter:
 
             y_fit = self.gaussian(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
-            ), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
@@ -985,8 +1010,7 @@ class SpectralLineFitter:
 
             y_fit = self.gaussian_with_offset(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
-            ), args=tuple(popt[0:3]), epsabs=0))* self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(), args=tuple(popt[0:3]), epsabs=0))* self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
@@ -1157,6 +1181,7 @@ class SpectralLineFitter:
 
         plt.grid()
         plt.show()
+        plt.close(fig)
 
     def print_fit_summary(self, fit_result, component_index=0):
         """
@@ -1500,10 +1525,12 @@ class Spectrum_Catalog:
             'survey_id': None,
             'prism_filepath': None,
             'prism_redshift': None,
+            'determined_redshift': None,
             'grating_filepaths': {},
             'grating_redshifts': {},
             'file_count': 0,
-            'available_filters': set()
+            'available_filters': set(),
+            'properties': {}
         })
 
         self.filepath_pattern_re = r'^/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^_]+)_([^_]+)_([a-zA-Z0-9_]+)\.spec.fits$'
@@ -1551,57 +1578,6 @@ class Spectrum_Catalog:
                     entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
                         filepath_str, DJA_Catalog_DataFrame)
 
-    def load_from_csv(self, csv_filepath):
-        """
-        Load catalog data from a CSV file.
-
-        Parameters
-        ----------
-        csv_filepath : str
-            Path to the CSV file to load.
-
-        Returns
-        -------
-        None
-        """
-        df = pd.read_csv(csv_filepath)
-
-        # Clear existing catalog
-        self.catalog = collections.defaultdict(lambda: {
-            'survey_id': None,
-            'prism_filepath': None,
-            'prism_redshift': None,
-            'grating_filepaths': {},
-            'grating_redshifts': {},
-            'file_count': 0,
-            'available_filters': set()
-        })
-
-        for _, row in df.iterrows():
-            survey_id_subid = row['survey_id_subid']
-
-            # Basic information
-            entry = self.catalog[survey_id_subid]
-            entry['survey_id'] = row['survey_id']
-            entry['id'] = survey_id_subid
-            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(
-                row['prism_filepath']) else None
-            entry['prism_redshift'] = row['prism_redshift'] if pd.notna(
-                row['prism_redshift']) else None
-            entry['file_count'] = int(row['file_count'])
-            entry['available_filters'] = set(row['available_filters'].split(
-                ',')) if pd.notna(row['available_filters']) else set()
-
-            # Handle grating_filepaths - keep as dict if already dict
-            if isinstance(row['available_filters'], dict):
-                for _, filter_name in row['available_filters'].items():
-                    print(f"Processing filter: {filter_name}")
-                    if filter_name == 'prism-clear':
-                        continue
-                    entry['grating_filepaths'][filter_name] = row['grating_filepaths'].get(
-                        filter_name, None)
-                    entry['grating_redshifts'][filter_name] = row['grating_redshifts'].get(
-                        filter_name, None)
 
     def load_spectrum_info(self, survey_id_subid):
         """
@@ -1708,24 +1684,14 @@ class Spectrum_Catalog:
                 'grating_filepaths': entry['grating_filepaths'],
                 # Keep as dict
                 'grating_redshifts': entry['grating_redshifts'],
+                'determined_redshift': entry['determined_redshift'],
                 'file_count': entry['file_count'],
-                'available_filters': entry['available_filters']  # Keep as set
+                'available_filters': entry['available_filters'],  # Keep as set
+                'properties': entry['properties']  # Keep as dict
             }
             data.append(row)
 
         return pd.DataFrame(data)
-
-    def save_catalog_to_csv(self, filename):
-        """
-        Save the catalog to a CSV file.
-
-        Parameters
-        ----------
-        filename : str
-            The name of the file to save the catalog to.
-        """
-        df = self.to_dataframe()
-        df.to_csv(filename, index=False)
 
     def save_catalog_to_pkl(self, filename):
         """
@@ -1768,7 +1734,9 @@ class Spectrum_Catalog:
             'grating_filepaths': {},
             'grating_redshifts': {},
             'file_count': 0,
-            'available_filters': set()
+            'available_filters': set(),
+            'properties': {},
+            'determined_redshift': None
         })
 
         for _, row in df.iterrows():
@@ -1786,6 +1754,10 @@ class Spectrum_Catalog:
             entry['file_count'] = int(row['file_count'])
             entry['available_filters'] = set(filter for filter in row['available_filters']) if pd.notna(
                 row['available_filters']) else set()
+            entry['properties'] = row['properties'] if pd.notna(
+                row['properties']) else {}
+            entry['determined_redshift'] = row['determined_redshift'] if pd.notna(
+                    row['determined_redshift']) else None
 
             # Handle grating_filepaths - keep as dict if already dict
             if isinstance(row['available_filters'], set):
@@ -1834,3 +1806,110 @@ class Spectrum_Catalog:
         """
         for index in self.catalog.keys():
             yield index, self.catalog[index]
+
+    def determine_redshift(self, survey_id_subid):
+        """
+        Determine the redshift for a given survey_id_subid. And fill the `determined_redshift` field in the catalog entry.
+        If two redshifts are available and within 5% of each other, it will use the average of the redshifts. If the difference is greater than 5%, it will use the prism redshift if available, or the grating redshift if only one is available.
+        If more than one grating redshift is available, it will choose the average of the two most similar redshifts.
+        If no redshift is available, it will return None.
+        If only one redshift is available, it will use that one.
+        Parameters
+        ----------
+        survey_id_subid : str
+            The survey_id_subid of the spectrum to determine the redshift for.
+        Returns
+        -------
+        astropy.units.Quantity or None
+            The determined redshift as an astropy.units.Quantity object, or None if no redshift could be determined.
+        """
+        if survey_id_subid not in self.catalog:
+            raise ValueError(
+                f"Survey ID {survey_id_subid} not found in the catalog.")
+
+        entry = self.catalog[survey_id_subid]
+        entry['properties']['redshift_conflict'] = False
+
+        prism_redshift = entry['prism_redshift']
+        grating_redshifts = [value for value in entry['grating_redshifts'].values() if not np.isnan(value)]
+
+        # No redshifts available
+        if prism_redshift is None and not grating_redshifts:
+            return None
+
+        # Only prism redshift available
+        if prism_redshift is not None and not grating_redshifts:
+            entry['determined_redshift'] = prism_redshift
+            return prism_redshift
+
+        # Only one grating redshift available, no prism
+        if prism_redshift is None and len(grating_redshifts) == 1:
+            entry['determined_redshift'] = grating_redshifts[0]
+            return grating_redshifts[0]
+
+        # One prism and one grating redshift
+        if prism_redshift is not None and len(grating_redshifts) == 1:
+            if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.05:
+                entry['determined_redshift'] = (prism_redshift + grating_redshifts[0]) / 2
+                return entry['determined_redshift']
+            else:
+                entry['determined_redshift'] = prism_redshift
+                entry['properties']['redshift_conflict'] = True
+                return prism_redshift
+
+        # Multiple redshifts available (either prism + multiple grating, or just multiple grating)
+        all_redshifts = []
+        if prism_redshift is not None:
+            all_redshifts.append(prism_redshift)
+        all_redshifts.extend(grating_redshifts)
+
+        # Find the two most similar redshifts
+        min_diff = float('inf')
+        best_pair = None
+        for i in range(len(all_redshifts)):
+            for j in range(i + 1, len(all_redshifts)):
+                diff = abs(all_redshifts[i] - all_redshifts[j])
+                if diff < min_diff:
+                    min_diff = diff
+                    best_pair = (all_redshifts[i], all_redshifts[j])
+
+        if best_pair:
+            # Check if the two nearest redshifts are within 5%
+            relative_diff = abs(best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
+            avg_redshift = (best_pair[0] + best_pair[1]) / 2
+
+            if relative_diff >= 0.05:
+                entry['properties']['redshift_conflict'] = True
+
+            entry['determined_redshift'] = avg_redshift
+            return avg_redshift
+        else:
+            # Fallback (should not happen if we have redshifts)
+            entry['determined_redshift'] = all_redshifts[0]
+            return all_redshifts[0]
+
+    def update_catalog_item(self,id, catalog):
+        """
+        Update a catalog item with the given id and catalog data.
+
+        Parameters
+        ----------
+        id : str
+            The survey_id_subid of the spectrum to update.
+        catalog : dict
+            The catalog data to update the item with.
+        """
+        if id not in self.catalog:
+            raise ValueError(f"Survey ID {id} not found in the catalog.")
+
+        self.catalog[id].update(catalog)
+
+    def __repr__(self):
+        """
+        Returns a panda DataFrame representation of the catalog.
+        """
+        df = self.to_dataframe()
+        if df.empty:
+            return "Spectrum_Catalog is empty."
+        else:
+            return df.to_string(index=False, max_rows=10, max_colwidth=50, justify='left') + "\n\n" + f"Total objects: {len(self.catalog)}"
