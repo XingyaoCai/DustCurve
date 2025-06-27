@@ -1904,6 +1904,21 @@ class Spectrum_Catalog:
 
         self.catalog[id].update(catalog)
 
+    def sample_num(self):
+        """
+        Returns the number of samples in the catalog.
+
+        Returns
+        -------
+        int
+            The number of samples in the catalog.
+        """
+        count=0
+        for id, catalog in self.catalog.items():
+            if catalog['properties']['Sample_Flag'] is True:
+                count += 1
+        return count
+
     def __repr__(self):
         """
         Returns a panda DataFrame representation of the catalog.
