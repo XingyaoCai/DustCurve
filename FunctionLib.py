@@ -1,21 +1,18 @@
+import ast
+import collections
+import inspect
+import os
+import re
+
+import astropy
+import astropy.io
+import astropy.nddata
+import astropy.units
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import os
-import matplotlib.pyplot as plt
-
 import scipy
-import astropy
-import astropy.units
-import astropy.nddata
-import astropy.io
-
-
-import inspect
-
-import re
-import collections
 import tqdm
-import ast
 
 
 def Load_Spectrum_From_Fits(file_path, redshift=None, index_in_hdulist=1, wavelength_key='wave', wavelength_unit='micron', flux_key='flux', flux_unit='uJy', error_key='error', error_unit='uJy'):
@@ -612,7 +609,7 @@ class Spectrum_1d:
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
-    def show(self,if_show=True):
+    def show(self, if_show=True):
         """Display the processed spectrum.
         Parameters
         ----------
@@ -623,7 +620,7 @@ class Spectrum_1d:
         fig, ax : matplotlib.figure.Figure, matplotlib.axes.Axes
 
         """
-        fig,ax=plt.subplots(figsize=(20, 10))
+        fig, ax = plt.subplots(figsize=(20, 10))
         if self.processing_wavelengths is not None and self.processing_flux is not None:
             if isinstance(self.processing_wavelengths, astropy.nddata.NDDataArray):
                 wave_data = self.processing_wavelengths.data
@@ -639,7 +636,8 @@ class Spectrum_1d:
                 flux_data = self.processing_flux
                 flux_unit = None
 
-            ax.plot(wave_data, flux_data, label='Processed Spectrum', color='blue')
+            ax.plot(wave_data, flux_data,
+                    label='Processed Spectrum', color='blue')
             ax.set_xlabel(
                 f'Wavelength ({wave_unit})' if wave_unit else 'Wavelength')
             ax.set_ylabel(f'Flux ({flux_unit})' if flux_unit else 'Flux')
@@ -649,7 +647,7 @@ class Spectrum_1d:
                 plt.show()
         return fig, ax
 
-    def dual_boundarys(self):
+    def dual_boundarys(self, if_process=False, unit=None,):
         """
         Return the lower and upper boundaries of the spectrum.
         Returns
@@ -658,10 +656,25 @@ class Spectrum_1d:
             A tuple containing the lower and upper boundaries of the spectrum.
             If no boundaries are set, returns (None, None).
         """
-        if self.restframe_wavelengths is not None:
-            lower_boundary = self.restframe_wavelengths.data.min() * self.restframe_wavelengths.unit
-            upper_boundary = self.restframe_wavelengths.data.max() * self.restframe_wavelengths.unit
+        if if_process:
+            lower_boundary = self.processing_wavelengths.data.min() * \
+                self.processing_wavelengths.unit
+            upper_boundary = self.processing_wavelengths.data.max() * \
+                self.processing_wavelengths.unit
+            if unit is not None:
+                lower_boundary = lower_boundary.to(unit)
+                upper_boundary = upper_boundary.to(unit)
             return lower_boundary, upper_boundary
+        if self.restframe_wavelengths is not None:
+            lower_boundary = self.restframe_wavelengths.data.min() * \
+                self.restframe_wavelengths.unit
+            upper_boundary = self.restframe_wavelengths.data.max() * \
+                self.restframe_wavelengths.unit
+            if unit is not None:
+                lower_boundary = lower_boundary.to(unit)
+                upper_boundary = upper_boundary.to(unit)
+            return lower_boundary, upper_boundary
+
         return None, None
 
     def __repr__(self):
@@ -865,10 +878,10 @@ class SpectralLineFitter:
 
             # Fit the power law using scipy.optimize.curve_fit
             popt, pcov = scipy.optimize.curve_fit(self.power_law,
-                                                obs_wavelengths,
-                                                obs_flux_lambda,
-                                                p0=initial_guess,
-                                                maxfev=self.max_iterations*100)
+                                                  obs_wavelengths,
+                                                  obs_flux_lambda,
+                                                  p0=initial_guess,
+                                                  maxfev=self.max_iterations*100)
 
             y_fit = self.power_law(obs_wavelengths, *popt)
 
@@ -877,20 +890,20 @@ class SpectralLineFitter:
                 'parameters': {
                     'amplitude': popt[0] * self.spectrum.processing_flux.unit,
                     'decay': popt[1]
-                    },
+                },
                 'fitted_curve': astropy.nddata.NDDataArray(
                     data=y_fit,
                     unit=self.spectrum.processing_flux.unit
-                    ),
+                ),
                 'covariance': pcov,
                 'integrated_flux': None,
                 'integration_error': None
-                }
+            }
         except Exception as e:
-                return {
-                    'success': False,
-                    'error': str(e)
-                }
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
     def fit_single_gaussian(self, initial_guess=None):
         """
@@ -941,7 +954,8 @@ class SpectralLineFitter:
 
             y_fit = self.gaussian(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
+            ), args=tuple(popt), epsabs=0) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
@@ -1010,7 +1024,8 @@ class SpectralLineFitter:
 
             y_fit = self.gaussian_with_offset(obs_wavelengths, *popt)
 
-            integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(), args=tuple(popt[0:3]), epsabs=0))* self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
+            ), args=tuple(popt[0:3]), epsabs=0)) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
@@ -1024,6 +1039,14 @@ class SpectralLineFitter:
                     data=y_fit,
                     unit=self.spectrum.processing_flux.unit
                 ),
+                'fitted_wavelengths': astropy.nddata.NDDataArray(
+                    data=obs_wavelengths,
+                    unit=self.spectrum.processing_wavelengths.unit
+                ),
+                'residual_flux': astropy.nddata.NDDataArray(
+                    data=obs_flux_lambda - y_fit,
+                    unit=self.spectrum.processing_flux.unit
+                ),
                 'covariance': pcov,
                 'integrated_flux': integrated_flux,
                 'integration_error': integration_error
@@ -1034,7 +1057,6 @@ class SpectralLineFitter:
                 'success': False,
                 'error': str(e)
             }
-
 
     def fit_exponential(self, initial_guess=None):
         """
@@ -1059,21 +1081,21 @@ class SpectralLineFitter:
 
             # Initial guess for the exponential parameters
             if initial_guess is None:
-                amplitude_guess= obs_flux_lambda[np.argmin(obs_wavelengths)]
+                amplitude_guess = obs_flux_lambda[np.argmin(obs_wavelengths)]
                 decay_guess = -0.5
 
-            initial_guess= [amplitude_guess, decay_guess]
+            initial_guess = [amplitude_guess, decay_guess]
 
             # Fit the exponential using scipy.optimize.curve_fit
             popt, pcov = scipy.optimize.curve_fit(self.exponential,
-                                                   obs_wavelengths,
-                                                   obs_flux_lambda,
-                                                   p0=initial_guess,
-                                                   maxfev=self.max_iterations)
+                                                  obs_wavelengths,
+                                                  obs_flux_lambda,
+                                                  p0=initial_guess,
+                                                  maxfev=self.max_iterations)
 
             y_fit = self.exponential(obs_wavelengths, *popt)
 
-            #dont need integrated flux for exponential fit
+            # dont need integrated flux for exponential fit
 
             return {
                 'success': True,
@@ -1088,14 +1110,13 @@ class SpectralLineFitter:
                 'covariance': pcov,
                 'integrated_flux': None,
                 'integration_error': None
-                }
+            }
 
         except Exception as e:
             return {
                 'success': False,
                 'error': str(e)
             }
-
 
     def check_line(self, line_restframe_wavelength, mean_fit, tolerance=10 * astropy.units.AA):
         """
@@ -1578,7 +1599,6 @@ class Spectrum_Catalog:
                     entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
                         filepath_str, DJA_Catalog_DataFrame)
 
-
     def load_spectrum_info(self, survey_id_subid):
         """
         Load the spectrum information for a given survey_id_subid.
@@ -1757,7 +1777,7 @@ class Spectrum_Catalog:
             entry['properties'] = row['properties'] if pd.notna(
                 row['properties']) else {}
             entry['determined_redshift'] = row['determined_redshift'] if pd.notna(
-                    row['determined_redshift']) else None
+                row['determined_redshift']) else None
 
             # Handle grating_filepaths - keep as dict if already dict
             if isinstance(row['available_filters'], set):
@@ -1831,7 +1851,8 @@ class Spectrum_Catalog:
         entry['properties']['redshift_conflict'] = False
 
         prism_redshift = entry['prism_redshift']
-        grating_redshifts = [value for value in entry['grating_redshifts'].values() if not np.isnan(value)]
+        grating_redshifts = [
+            value for value in entry['grating_redshifts'].values() if not np.isnan(value)]
 
         # No redshifts available
         if prism_redshift is None and not grating_redshifts:
@@ -1850,7 +1871,8 @@ class Spectrum_Catalog:
         # One prism and one grating redshift
         if prism_redshift is not None and len(grating_redshifts) == 1:
             if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.05:
-                entry['determined_redshift'] = (prism_redshift + grating_redshifts[0]) / 2
+                entry['determined_redshift'] = (
+                    prism_redshift + grating_redshifts[0]) / 2
                 return entry['determined_redshift']
             else:
                 entry['determined_redshift'] = prism_redshift
@@ -1875,7 +1897,8 @@ class Spectrum_Catalog:
 
         if best_pair:
             # Check if the two nearest redshifts are within 5%
-            relative_diff = abs(best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
+            relative_diff = abs(
+                best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
             avg_redshift = (best_pair[0] + best_pair[1]) / 2
 
             if relative_diff >= 0.05:
@@ -1888,7 +1911,7 @@ class Spectrum_Catalog:
             entry['determined_redshift'] = all_redshifts[0]
             return all_redshifts[0]
 
-    def update_catalog_item(self,id, catalog):
+    def update_catalog_item(self, id, catalog):
         """
         Update a catalog item with the given id and catalog data.
 
@@ -1913,7 +1936,7 @@ class Spectrum_Catalog:
         int
             The number of samples in the catalog.
         """
-        count=0
+        count = 0
         for id, catalog in self.catalog.items():
             if catalog['properties']['Sample_Flag'] is True:
                 count += 1
@@ -1928,3 +1951,135 @@ class Spectrum_Catalog:
             return "Spectrum_Catalog is empty."
         else:
             return df.to_string(index=False, max_rows=10, max_colwidth=50, justify='left') + "\n\n" + f"Total objects: {len(self.catalog)}"
+
+
+
+def estimate_snr_error(spectrum_1d,fitter_fit_result, line_center_wavelength,continuum_width=150*astropy.units.AA, measureLengthInFWHM=3, n_random_samples=1000, plot_diagnostics=False):
+    """
+    Estimate the continuum uncertainty using the linefitter object.
+
+    Parameters
+    ----------
+    linefitter : LineFitter
+        The linefitter object containing the spectrum and fitted lines.
+    continuum_width : astropy.units.Quantity, optional
+        The width of the continuum region to use for SNR estimation, by default 150 * astropy.units.AA
+    sigma_range : int, optional
+        The number of standard deviations to consider for the noise estimation, by default 3
+    n_random_samples : int, optional
+        The number of random samples to use for noise estimation, by default 1000
+    plot_diagnostics : bool, optional
+        Whether to plot diagnostic figures, by default False
+
+    Returns
+    -------
+    dict
+        A dictionary containing the estimated SNR error and other relevant information.
+        - 'continuum_std': The standard deviation of the continuum region.
+        - 'random_integrals': The random integrals used for uncertainty estimation.
+        - 'snr_error': The estimated SNR error.
+        - 'continuum_region': The wavelength range of the continuum region.
+    """
+
+    continuum_width=continuum_width.to(astropy.units.AA)
+    line_center_wavelength = line_center_wavelength.to(astropy.units.AA)
+
+    line_center_wavelength= fitter_fit_result['parameters']['mean'].to(astropy.units.AA)
+    fitted_curve= fitter_fit_result['fitted_curve']
+    sigma= fitter_fit_result['parameters']['stddev'].to(astropy.units.AA)
+
+    measure_range= measureLengthInFWHM * 2.355*sigma
+
+    half_width= continuum_width / 2
+    continuum_start_region = (line_center_wavelength - half_width, line_center_wavelength + half_width- measure_range)
+
+    #spectrum_1d.set_boundarys(continuum_start_region[0], continuum_start_region[1]+ measure_range)
+
+    continuum_sampling_region = spectrum_1d.dual_boundarys(if_process=True,unit=astropy.units.AA)
+
+    indices = (spectrum_1d.restframe_wavelengths.convert_unit_to(astropy.units.AA).data >= continuum_start_region[0].value) & (spectrum_1d.restframe_wavelengths.convert_unit_to(astropy.units.AA).data <= continuum_start_region[1].value)
+
+    continuumStartRegionWavelengths = spectrum_1d.restframe_wavelengths[indices]
+
+    continuumStartRegionWavelengths = continuumStartRegionWavelengths.convert_unit_to(astropy.units.AA)
+
+    residual_flux=fitter_fit_result['residual_flux'].data
+
+    #plt.plot(spectrum_1d.processing_wavelengths.data, residual_flux)
+
+    np.random.seed(42)  # For reproducibility
+    random_integrals = []
+    for _ in range(n_random_samples):
+        start_idx=np.random.randint(0, (continuumStartRegionWavelengths).data.shape[0]-1)
+
+        random_start = continuumStartRegionWavelengths.data[start_idx]
+        random_end = random_start + continuum_width.value
+        random_integrals.append(
+            np.trapz(
+                residual_flux[
+                    (spectrum_1d.processing_wavelengths.convert_unit_to(astropy.units.AA).data >= random_start) &
+                    (spectrum_1d.processing_wavelengths.convert_unit_to(astropy.units.AA).data <= random_end)
+                ],
+                x=spectrum_1d.processing_wavelengths[
+                    (spectrum_1d.processing_wavelengths.convert_unit_to(astropy.units.AA).data >= random_start) &
+                    (spectrum_1d.processing_wavelengths.convert_unit_to(astropy.units.AA).data <= random_end)
+                ]
+            )
+        )
+
+
+    return random_integrals
+
+
+
+def fitting_uncertainty(fit_result):
+    covariance = fit_result['covariance']
+
+# 提取相关参数的不确定性
+    var_A = covariance[0,0]         # = 3.10e-35
+    var_sigma = covariance[2,2]     # = 9.98e-01
+    cov_A_sigma = covariance[0,2]   # = -3.05e-18
+
+    sigma_A = np.sqrt(var_A)        # = 5.59e-18
+    sigma_sigma = np.sqrt(var_sigma) # = 0.999
+
+
+# 高斯积分流量：F = A * sigma * sqrt(2*pi)
+    A = fit_result['parameters']['amplitude'].value
+    sigma = fit_result['parameters']['stddev'].value
+    sqrt_2pi = np.sqrt(2 * np.pi)
+
+# 验证积分流量
+    flux_calculated = A * sigma * sqrt_2pi
+#  print(f"Integrated Flux: {flux_calculated:.3e}")
+
+# 误差传播公式：σ_F² = (∂F/∂A)²σ_A² + (∂F/∂σ)²σ_σ² + 2(∂F/∂A)(∂F/∂σ)cov_A_σ
+    dF_dA = sigma * sqrt_2pi
+    dF_dsigma = A * sqrt_2pi
+
+    flux_variance = (dF_dA**2 * var_A +
+                    dF_dsigma**2 * var_sigma +
+                    2 * dF_dA * dF_dsigma * cov_A_sigma)
+
+    fitting_uncertainty = np.sqrt(flux_variance)
+
+    return fitting_uncertainty, flux_calculated
+
+
+def calculate_err_at_given_wavelength(Spectrum_1d, RestFrameWavelength):
+
+    Spectrum_1d.set_boundarys(RestFrameWavelength-75*astropy.units.AA, RestFrameWavelength+75*astropy.units.AA)
+
+    spectralLineFitter=FL.SpectralLineFitter(Spectrum_1d,RestFrameWavelength)
+
+    fit_result=spectralLineFitter.fit_single_gaussian_with_offset()
+
+    fitting_uncertainty_value, flux_calculated=fitting_uncertainty(fit_result)
+
+    error_array=estimate_snr_error(Spectrum_1d, fit_result, fit_result['parameters']['mean'].to(astropy.units.AA), continuum_width=150*astropy.units.AA, measureLengthInFWHM=2, n_random_samples=20)
+
+    err=np.std(error_array)
+
+
+
+    return np.sqrt(fitting_uncertainty_value**2 + err**2), flux_calculated
