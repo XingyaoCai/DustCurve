@@ -609,6 +609,19 @@ class Spectrum_1d:
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
+    def get_flux(self, lower_boundary=None, upper_boundary=None):
+        if lower_boundary is not None:
+            lower_boundary=self.dual_boundarys()[0]
+        if upper_boundary is not None:
+            upper_boundary=self.dual_boundarys()[1]
+
+        lower_boundary=lower_boundary.to(self.restframe_wavelengths.unit)
+        upper_boundary=upper_boundary.to(self.restframe_wavelengths.unit)
+
+        self.set_boundarys(lower_boundary, upper_boundary)
+
+        return self.processing_flux
+
     def show(self, if_show=True):
         """Display the processed spectrum.
         Parameters
@@ -676,6 +689,13 @@ class Spectrum_1d:
             return lower_boundary, upper_boundary
 
         return None, None
+
+    def reset(self):
+        """Reset the processing wavelengths and flux to the original observed values."""
+        self.processing_wavelengths = self.restframe_wavelengths
+        self.processing_flux = self.observed_flux_lambda if self.observed_flux_lambda is not None else self.observed_flux_nu
+        self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
+            astropy.units.AA)
 
     def __repr__(self):
         """String representation of the spectrum object."""
@@ -2070,7 +2090,7 @@ def calculate_err_at_given_wavelength(Spectrum_1d, RestFrameWavelength):
 
     Spectrum_1d.set_boundarys(RestFrameWavelength-75*astropy.units.AA, RestFrameWavelength+75*astropy.units.AA)
 
-    spectralLineFitter=FL.SpectralLineFitter(Spectrum_1d,RestFrameWavelength)
+    spectralLineFitter=SpectralLineFitter(Spectrum_1d,RestFrameWavelength)
 
     fit_result=spectralLineFitter.fit_single_gaussian_with_offset()
 
@@ -2079,6 +2099,10 @@ def calculate_err_at_given_wavelength(Spectrum_1d, RestFrameWavelength):
     error_array=estimate_snr_error(Spectrum_1d, fit_result, fit_result['parameters']['mean'].to(astropy.units.AA), continuum_width=150*astropy.units.AA, measureLengthInFWHM=2, n_random_samples=20)
 
     err=np.std(error_array)
+
+
+
+    return err, flux_calculated
 
 
 
