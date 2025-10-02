@@ -660,7 +660,7 @@ class Spectrum_1d:
                 plt.show()
         return fig, ax
 
-    def dual_boundarys(self, if_process=False, unit=None,):
+    def dual_boundarys(self, if_process=False, unit=None):
         """
         Return the lower and upper boundaries of the spectrum.
         Returns
@@ -2065,17 +2065,17 @@ def fitting_uncertainty(fit_result):
 
 
 # 高斯积分流量：F = A * sigma * sqrt(2*pi)
-    A = fit_result['parameters']['amplitude'].value
+    Amp = fit_result['parameters']['amplitude'].value
     sigma = fit_result['parameters']['stddev'].value
     sqrt_2pi = np.sqrt(2 * np.pi)
 
 # 验证积分流量
-    flux_calculated = A * sigma * sqrt_2pi
+    flux_calculated = Amp * sigma * sqrt_2pi
 #  print(f"Integrated Flux: {flux_calculated:.3e}")
 
 # 误差传播公式：σ_F² = (∂F/∂A)²σ_A² + (∂F/∂σ)²σ_σ² + 2(∂F/∂A)(∂F/∂σ)cov_A_σ
     dF_dA = sigma * sqrt_2pi
-    dF_dsigma = A * sqrt_2pi
+    dF_dsigma = Amp * sqrt_2pi
 
     flux_variance = (dF_dA**2 * var_A +
                     dF_dsigma**2 * var_sigma +
@@ -2107,3 +2107,8 @@ def calculate_err_at_given_wavelength(Spectrum_1d, RestFrameWavelength):
 
 
     return np.sqrt(fitting_uncertainty_value**2 + err**2), flux_calculated
+
+
+def BalmerDecrementUncertainty(alphaValve, alphaError, betaValve, betaError):
+    err_ratio=alphaError**2/betaValve**2 + betaError**2*alphaValve**2/betaValve**4
+    return np.sqrt(err_ratio)
