@@ -1,4 +1,3 @@
-import ast
 import collections
 import inspect
 import os
@@ -13,6 +12,9 @@ import numpy as np
 import pandas as pd
 import scipy
 import tqdm
+
+from pathlib import Path # Standard and correct way to import
+
 
 
 def Load_Spectrum_From_Fits(file_path, redshift=None, index_in_hdulist=1, wavelength_key='wave', wavelength_unit='micron', flux_key='flux', flux_unit='uJy', error_key='error', error_unit='uJy'):
@@ -93,6 +95,12 @@ def Load_Spectrum_Redshift(filepath, catalog):
     redshift : astropy.units.Quantity or None
         The redshift of the spectrum, or None if not found.
     """
+    if not isinstance(catalog, pd.DataFrame):
+        try:
+            catalog = pd.read_csv(catalog)
+        except Exception as e:
+            raise ValueError(
+                "Catalog must be a pandas DataFrame or a valid CSV file path.") from e
 
     filename = filepath.split('/')[-1]
 
@@ -107,6 +115,44 @@ def Load_Spectrum_Redshift(filepath, catalog):
         redshift_value = catalog.loc[index_in_catalog[0], 'zfit']
         return astropy.units.Quantity(redshift_value, unit=astropy.units.dimensionless_unscaled)
     return astropy.units.Quantity(redshift_value, unit=astropy.units.dimensionless_unscaled)
+
+
+def Load_Spectrum_Grade(filepath, catalog):
+    """
+    Load the grade of a spectrum file from the catalog.
+
+    Parameters
+    ----------
+    filepath : str
+        The file path of the spectrum file.
+    catalog : pandas.DataFrame
+        The catalog DataFrame containing spectrum information.
+
+    Returns
+    -------
+    grade : int or None
+        The grade of the spectrum if found, otherwise None.
+    """
+    if not isinstance(catalog, pd.DataFrame):
+        try:
+            catalog = pd.read_csv(catalog)
+        except Exception as e:
+            raise ValueError(
+                "Catalog must be a pandas DataFrame or a valid CSV file path.") from e
+
+    filename = filepath.split('/')[-1]
+
+    index_in_catalog = catalog[catalog['file'] == filename].index
+
+    if len(index_in_catalog) == 0:
+        return None
+
+    grade_value = catalog.loc[index_in_catalog[0], 'grade']
+
+    if np.isnan(grade_value):
+        grade_value = catalog.loc[index_in_catalog[0], 'grade_fit']
+        return int(grade_value)
+    return int(grade_value)
 
 
 def Load_N_Rescale_Spectra(Fits_FilePath):
@@ -238,25 +284,31 @@ class Spectrum_1d:
 
     A class to store and manipulate a 1D spectrum. The initialization requires the observed
     wavelengths, fluxes in F_nu or F_lambda units, and the redshift value. The initialization
-    will automatically calculate the rest frame wavelengths based on the observed wavelengths
-    and redshift and store them as astropy.nddata.NDDataArray objects.
+    will automatically calculate the rest frame wavelengths and rest frame fluxes and store them
+    as astropy.nddata.NDDataArray objects.
 
     Attributes
     ----------
     observed_wavelengths : astropy.nddata.NDDataArray
-        The observed wavelengths of the spectrum, should contain the unit.
+        The observed wavelengths of the spectrum.
     observed_flux_nu : astropy.nddata.NDDataArray
-        The observed flux values of the spectrum in F_nu units, should contain the unit and uncertainty.
+        The observed flux values in F_nu units.
     observed_flux_lambda : astropy.nddata.NDDataArray
-        The observed flux values of the spectrum in F_lambda units, should contain the unit and uncertainty.
+        The observed flux values in F_lambda units.
     redshift : astropy.units.Quantity
         The redshift value of the spectrum.
     restframe_wavelengths : astropy.nddata.NDDataArray
-        The rest frame wavelengths of the spectrum, calculated from the observed wavelengths and redshift.
+        The rest frame wavelengths of the spectrum.
+    restframe_flux_nu : astropy.nddata.NDDataArray
+        The rest frame flux values in F_nu units, corrected for cosmological dimming.
+    restframe_flux_lambda : astropy.nddata.NDDataArray
+        The rest frame flux values in F_lambda units, corrected for cosmological dimming.
     processing_wavelengths : astropy.nddata.NDDataArray
-        The processing wavelengths of the spectrum, which can be either observed or rest frame depending on the input. Here used to store the wavelengths that are currently being processed or analyzed.
-    processing_flux: astropy.nddata.NDDataArray
-        The processing flux values of the spectrum, which can be either F_nu or F_lambda depending on the input. Here used to store the flux that is currently being processed or analyzed.
+        The wavelengths currently being processed or analyzed, typically a subset of the rest-frame wavelengths.
+    processing_flux_lambda: astropy.nddata.NDDataArray
+        The F_lambda flux currently being processed, corresponding to the processing_wavelengths.
+    processing_flux_nu: astropy.nddata.NDDataArray
+        The F_nu flux currently being processed, corresponding to the processing_wavelengths.
     """
 
     def __init__(self, observed_wavelengths, redshift, observed_flux_nu=None, observed_flux_lambda=None):
@@ -283,7 +335,6 @@ class Spectrum_1d:
         if isinstance(observed_wavelengths, astropy.nddata.NDDataArray):
             self.observed_wavelengths = observed_wavelengths
         elif isinstance(observed_wavelengths, astropy.units.Quantity):
-            # If input is a Quantity, NDDataArray stores it in its .data attribute
             self.observed_wavelengths = astropy.nddata.NDDataArray(
                 observed_wavelengths)
         else:
@@ -303,31 +354,27 @@ class Spectrum_1d:
                 "Redshift must be a float, int, or dimensionless astropy.units.Quantity.")
 
         # Calculate rest-frame wavelengths
-        # Get the observed wavelength data, which might be a Quantity or ndarray
         obs_wave_data_attr = self.observed_wavelengths.data
         if isinstance(obs_wave_data_attr, astropy.units.Quantity):
             obs_wave_values = obs_wave_data_attr.value
         else:
-            obs_wave_values = obs_wave_data_attr  # Assuming it's a numpy array
+            obs_wave_values = obs_wave_data_attr
 
         rest_wave_data = obs_wave_values / (1 + self.redshift.value)
 
         rest_wave_uncertainty_values = None
         if self.observed_wavelengths.uncertainty is not None:
-            # Assuming uncertainty.array gives the numerical values of uncertainty
-            # and it needs to be scaled like the data.
             rest_wave_uncertainty_values = self.observed_wavelengths.uncertainty.array / \
                 (1 + self.redshift.value)
-            # Reconstruct the uncertainty object with the new values
             rest_wave_uncertainty = type(self.observed_wavelengths.uncertainty)(
                 rest_wave_uncertainty_values)
         else:
             rest_wave_uncertainty = None
 
         self.restframe_wavelengths = astropy.nddata.NDDataArray(
-            data=rest_wave_data,  # This data is a numpy array
+            data=rest_wave_data,
             uncertainty=rest_wave_uncertainty,
-            unit=self.observed_wavelengths.unit  # Unit is preserved
+            unit=self.observed_wavelengths.unit
         )
 
         # Handle F_nu flux
@@ -336,22 +383,10 @@ class Spectrum_1d:
                 self.observed_flux_nu = observed_flux_nu
             elif isinstance(observed_flux_nu, astropy.units.Quantity):
                 self.observed_flux_nu = astropy.nddata.NDDataArray(
-                    observed_flux_nu)  # .data will be the Quantity
+                    observed_flux_nu)
             else:
                 raise TypeError(
                     "observed_flux_nu must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
-
-            target_unit_nu = astropy.units.erg / \
-                (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
-            # Check unit equivalency using the actual quantity
-            flux_nu_data_attr = self.observed_flux_nu.data
-            if isinstance(flux_nu_data_attr, astropy.units.Quantity):
-                current_flux_nu_q = flux_nu_data_attr
-            else:
-                current_flux_nu_q = flux_nu_data_attr * self.observed_flux_nu.unit
-
-            # if not current_flux_nu_q.unit.is_equivalent(target_unit_nu):
-            #     raise ValueError(f"observed_flux_nu units ({current_flux_nu_q.unit}) must be equivalent to {target_unit_nu}")
         else:
             self.observed_flux_nu = None
 
@@ -361,22 +396,10 @@ class Spectrum_1d:
                 self.observed_flux_lambda = observed_flux_lambda
             elif isinstance(observed_flux_lambda, astropy.units.Quantity):
                 self.observed_flux_lambda = astropy.nddata.NDDataArray(
-                    observed_flux_lambda)  # .data will be the Quantity
+                    observed_flux_lambda)
             else:
                 raise TypeError(
                     "observed_flux_lambda must be an astropy.nddata.NDDataArray or astropy.units.Quantity object.")
-
-            target_unit_lambda = astropy.units.erg / \
-                (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
-            # Check unit equivalency
-            flux_lambda_data_attr = self.observed_flux_lambda.data
-            if isinstance(flux_lambda_data_attr, astropy.units.Quantity):
-                current_flux_lambda_q = flux_lambda_data_attr
-            else:
-                current_flux_lambda_q = flux_lambda_data_attr * self.observed_flux_lambda.unit
-
-            # if not current_flux_lambda_q.unit.is_equivalent(target_unit_lambda):
-            #     raise ValueError(f"observed_flux_lambda units ({current_flux_lambda_q.unit}) must be equivalent to {target_unit_lambda}")
         else:
             self.observed_flux_lambda = None
 
@@ -386,8 +409,39 @@ class Spectrum_1d:
         elif self.observed_flux_lambda is None and self.observed_flux_nu is not None:
             self._convert_nu_to_lambda()
 
-        self.processing_flux = self.observed_flux_lambda if self.observed_flux_lambda is not None else self.observed_flux_nu
-        self.processing_wavelengths = self.restframe_wavelengths if self.restframe_wavelengths is not None else self.observed_wavelengths
+        # Calculate rest-frame fluxes
+        z_factor = 1 + self.redshift.value
+        self.restframe_flux_nu = None
+        self.restframe_flux_lambda = None
+
+        if self.observed_flux_nu is not None:
+            rest_flux_nu_data = self.observed_flux_nu.data * z_factor
+            rest_uncert_nu = None
+            if self.observed_flux_nu.uncertainty is not None:
+                rest_uncert_nu_data = self.observed_flux_nu.uncertainty.array * z_factor
+                rest_uncert_nu = type(self.observed_flux_nu.uncertainty)(rest_uncert_nu_data)
+            self.restframe_flux_nu = astropy.nddata.NDDataArray(
+                data=rest_flux_nu_data,
+                uncertainty=rest_uncert_nu,
+                unit=self.observed_flux_nu.unit
+            )
+
+        if self.observed_flux_lambda is not None:
+            rest_flux_lambda_data = self.observed_flux_lambda.data * (z_factor)
+            rest_uncert_lambda = None
+            if self.observed_flux_lambda.uncertainty is not None:
+                rest_uncert_lambda_data = self.observed_flux_lambda.uncertainty.array * (z_factor)
+                rest_uncert_lambda = type(self.observed_flux_lambda.uncertainty)(rest_uncert_lambda_data)
+            self.restframe_flux_lambda = astropy.nddata.NDDataArray(
+                data=rest_flux_lambda_data,
+                uncertainty=rest_uncert_lambda,
+                unit=self.observed_flux_lambda.unit
+            )
+
+        # Set default processing frame to be the rest frame
+        self.processing_wavelengths = self.restframe_wavelengths
+        self.processing_flux_lambda = self.restframe_flux_lambda
+        self.processing_flux_nu = self.restframe_flux_nu
 
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
@@ -397,81 +451,35 @@ class Spectrum_1d:
 
     def _handle_nan_values(self):
         """Convert NaN values to 0 in wavelengths and fluxes."""
+        attributes_to_clean = [
+            'observed_wavelengths', 'restframe_wavelengths',
+            'observed_flux_nu', 'observed_flux_lambda',
+            'restframe_flux_nu', 'restframe_flux_lambda'
+        ]
 
-        # Handle observed wavelengths
-        if self.observed_wavelengths is not None:
-            obs_wave_data = self.observed_wavelengths.data
-            if isinstance(obs_wave_data, astropy.units.Quantity):
-                nan_mask = np.isnan(obs_wave_data.value)
-                if np.any(nan_mask):
-                    new_values = obs_wave_data.value.copy()
-                    new_values[nan_mask] = 0
-                    self.observed_wavelengths.data = new_values * obs_wave_data.unit
-            else:
-                nan_mask = np.isnan(obs_wave_data)
-                if np.any(nan_mask):
-                    self.observed_wavelengths.data[nan_mask] = 0
-
-        # Handle rest-frame wavelengths
-        if self.restframe_wavelengths is not None:
-            rest_wave_data = self.restframe_wavelengths.data
-            if isinstance(rest_wave_data, astropy.units.Quantity):
-                nan_mask = np.isnan(rest_wave_data.value)
-                if np.any(nan_mask):
-                    new_values = rest_wave_data.value.copy()
-                    new_values[nan_mask] = 0
-                    self.restframe_wavelengths.data = new_values * rest_wave_data.unit
-            else:
-                nan_mask = np.isnan(rest_wave_data)
-                if np.any(nan_mask):
-                    self.restframe_wavelengths.data[nan_mask] = 0
-
-        # Handle observed flux nu
-        if self.observed_flux_nu is not None:
-            flux_nu_data = self.observed_flux_nu.data
-            if isinstance(flux_nu_data, astropy.units.Quantity):
-                nan_mask = np.isnan(flux_nu_data.value)
-                if np.any(nan_mask):
-                    new_values = flux_nu_data.value.copy()
-                    new_values[nan_mask] = 0
-                    self.observed_flux_nu.data = new_values * flux_nu_data.unit
-            else:
-                nan_mask = np.isnan(flux_nu_data)
-                if np.any(nan_mask):
-                    self.observed_flux_nu.data[nan_mask] = 0
-
-            # Handle uncertainty for flux_nu if present
-            if self.observed_flux_nu.uncertainty is not None:
-                uncertainty_array = self.observed_flux_nu.uncertainty.array
-                if uncertainty_array is not None:
-                    nan_mask = np.isnan(uncertainty_array)
+        for attr_name in attributes_to_clean:
+            attr = getattr(self, attr_name)
+            if attr is not None:
+                data_array = attr.data
+                if isinstance(data_array, astropy.units.Quantity):
+                    nan_mask = np.isnan(data_array.value)
                     if np.any(nan_mask):
-                        uncertainty_array[nan_mask] = 0
-
-        # Handle observed flux lambda
-        if self.observed_flux_lambda is not None:
-            flux_lambda_data = self.observed_flux_lambda.data
-            if isinstance(flux_lambda_data, astropy.units.Quantity):
-                nan_mask = np.isnan(flux_lambda_data.value)
-                if np.any(nan_mask):
-                    new_values = flux_lambda_data.value.copy()
-                    new_values[nan_mask] = 0
-                    self.observed_flux_lambda.data = new_values * flux_lambda_data.unit
-            else:
-                nan_mask = np.isnan(flux_lambda_data)
-                if np.any(nan_mask):
-                    self.observed_flux_lambda.data[nan_mask] = 0
-
-            # Handle uncertainty for flux_lambda if present
-            if self.observed_flux_lambda.uncertainty is not None:
-                uncertainty_array = self.observed_flux_lambda.uncertainty.array
-                if uncertainty_array is not None:
-                    nan_mask = np.isnan(uncertainty_array)
+                        new_values = data_array.value.copy()
+                        new_values[nan_mask] = 0
+                        attr.data = new_values * data_array.unit
+                else:
+                    nan_mask = np.isnan(data_array)
                     if np.any(nan_mask):
-                        uncertainty_array[nan_mask] = 0
+                        attr.data[nan_mask] = 0
+
+                if attr.uncertainty is not None:
+                    uncertainty_array = attr.uncertainty.array
+                    if uncertainty_array is not None:
+                        nan_mask = np.isnan(uncertainty_array)
+                        if np.any(nan_mask):
+                            uncertainty_array[nan_mask] = 0
 
     def _get_quantity_from_nddata(self, nddata_array):
-        """Helper to reliably get an astropy.units.Quantity from an NDDataArray."""
         if nddata_array is None:
             return None
         data_attr = nddata_array.data
@@ -479,103 +487,82 @@ class Spectrum_1d:
             return data_attr
         elif nddata_array.unit is not None:
             return data_attr * nddata_array.unit
-        else:  # Should not happen if units are always present as per design
+        else:
             raise ValueError(
                 "NDDataArray is missing unit information for quantity conversion.")
 
     def _convert_lambda_to_nu(self):
-        """Convert F_lambda to F_nu using astropy.units.spectral_density and rest-frame wavelength."""
         if self.observed_flux_lambda is None:
             raise ValueError(
                 "Cannot convert from F_lambda: observed_flux_lambda is None.")
 
         F_lambda_quantity_to_convert = self._get_quantity_from_nddata(
             self.observed_flux_lambda)
-
-        # For spectral_density, the wavelength needs to be a Quantity.
-        # self.restframe_wavelengths.data is a numpy array, .unit is the unit.
-        rest_wave_quantity = self.restframe_wavelengths.data * \
-            self.restframe_wavelengths.unit
-
+        obs_wave_quantity = self._get_quantity_from_nddata(self.observed_wavelengths)
         target_F_nu_unit = astropy.units.erg / \
             (astropy.units.cm**2 * astropy.units.s * astropy.units.Hz)
-
         F_nu_converted = F_lambda_quantity_to_convert.to(
             target_F_nu_unit,
-            equivalencies=astropy.units.spectral_density(rest_wave_quantity)
+            equivalencies=astropy.units.spectral_density(obs_wave_quantity)
         )
-
         flux_nu_data = F_nu_converted.value
-
         uncertainty_nu_obj = None
         if self.observed_flux_lambda.uncertainty is not None:
             uncertainty_F_lambda_values = self.observed_flux_lambda.uncertainty.array
-            # Assume uncertainty has the same unit as the flux data
             uncertainty_F_lambda_quantity = uncertainty_F_lambda_values * \
                 self.observed_flux_lambda.unit
-
             uncertainty_F_nu_converted = uncertainty_F_lambda_quantity.to(
                 target_F_nu_unit,
                 equivalencies=astropy.units.spectral_density(
-                    rest_wave_quantity)
+                    obs_wave_quantity)
             )
             uncertainty_nu_data = uncertainty_F_nu_converted.value
             uncertainty_nu_obj = type(
                 self.observed_flux_lambda.uncertainty)(uncertainty_nu_data)
 
         self.observed_flux_nu = astropy.nddata.NDDataArray(
-            data=flux_nu_data,  # flux_nu_data is now a numpy array
+            data=flux_nu_data,
             uncertainty=uncertainty_nu_obj,
             unit=target_F_nu_unit
         )
 
     def _convert_nu_to_lambda(self):
-        """Convert F_nu to F_lambda using astropy.units.spectral_density and rest-frame wavelength."""
         if self.observed_flux_nu is None:
             raise ValueError(
                 "Cannot convert from F_nu: observed_flux_nu is None.")
 
         F_nu_quantity_to_convert = self._get_quantity_from_nddata(
             self.observed_flux_nu)
-
-        # For spectral_density, the wavelength needs to be a Quantity.
-        rest_wave_quantity = self.restframe_wavelengths.data * \
-            self.restframe_wavelengths.unit
-
+        obs_wave_quantity = self._get_quantity_from_nddata(self.observed_wavelengths)
         target_F_lambda_unit = astropy.units.erg / \
             (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)
-
         F_lambda_converted = F_nu_quantity_to_convert.to(
             target_F_lambda_unit,
-            equivalencies=astropy.units.spectral_density(rest_wave_quantity)
+            equivalencies=astropy.units.spectral_density(obs_wave_quantity)
         )
-
         flux_lambda_data = F_lambda_converted.value
-
         uncertainty_lambda_obj = None
         if self.observed_flux_nu.uncertainty is not None:
             uncertainty_F_nu_values = self.observed_flux_nu.uncertainty.array
-            # Assume uncertainty has the same unit as the flux data
             uncertainty_F_nu_quantity = uncertainty_F_nu_values * self.observed_flux_nu.unit
-
             uncertainty_F_lambda_converted = uncertainty_F_nu_quantity.to(
                 target_F_lambda_unit,
                 equivalencies=astropy.units.spectral_density(
-                    rest_wave_quantity)
+                    obs_wave_quantity)
             )
             uncertainty_lambda_data = uncertainty_F_lambda_converted.value
             uncertainty_lambda_obj = type(
                 self.observed_flux_nu.uncertainty)(uncertainty_lambda_data)
 
         self.observed_flux_lambda = astropy.nddata.NDDataArray(
-            data=flux_lambda_data,  # flux_lambda_data is now a numpy array
+            data=flux_lambda_data,
             uncertainty=uncertainty_lambda_obj,
             unit=target_F_lambda_unit
         )
 
     def set_boundarys(self, lower_boundary=None, upper_boundary=None):
         """
-        Set the lower and upper boundaries for the spectrum.
+        Set the lower and upper boundaries for the spectrum on the rest-frame data.
 
         Parameters
         ----------
@@ -584,76 +571,156 @@ class Spectrum_1d:
         upper_boundary : astropy.units.Quantity, optional
             The upper boundary of the spectrum. If None, no upper boundary is set.
         """
+        indices = None
         if lower_boundary is not None and upper_boundary is None:
             lower_boundary = lower_boundary.to(self.restframe_wavelengths.unit)
             indices = self.restframe_wavelengths.data >= lower_boundary.value
-            self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[
-                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
-        if upper_boundary is not None and lower_boundary is None:
+        elif upper_boundary is not None and lower_boundary is None:
             upper_boundary = upper_boundary.to(self.restframe_wavelengths.unit)
             indices = self.restframe_wavelengths.data <= upper_boundary.value
-            self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[
-                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
-
-        if lower_boundary is not None and upper_boundary is not None:
+        elif lower_boundary is not None and upper_boundary is not None:
             lower_boundary = lower_boundary.to(self.restframe_wavelengths.unit)
             upper_boundary = upper_boundary.to(self.restframe_wavelengths.unit)
-            indices = (self.restframe_wavelengths.data >= lower_boundary.value) & (
-                self.restframe_wavelengths.data <= upper_boundary.value)
+            indices = (self.restframe_wavelengths.data >= lower_boundary.value) & \
+                      (self.restframe_wavelengths.data <= upper_boundary.value)
+
+        if indices is not None:
             self.processing_wavelengths = self.restframe_wavelengths[indices]
-            self.processing_flux = self.observed_flux_lambda[
-                indices] if self.observed_flux_lambda is not None else self.observed_flux_nu[indices]
+            self.processing_flux_lambda = self.restframe_flux_lambda[indices] if self.restframe_flux_lambda is not None else None
+            self.processing_flux_nu = self.restframe_flux_nu[indices] if self.restframe_flux_nu is not None else None
 
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
-    def get_flux(self, lower_boundary=None, upper_boundary=None):
-        if lower_boundary is not None:
-            lower_boundary=self.dual_boundarys()[0]
-        if upper_boundary is not None:
-            upper_boundary=self.dual_boundarys()[1]
+    def get_flux(self, unit='lambda', lower_boundary=None, upper_boundary=None):
+        """
+        Applies boundaries and returns the processed flux array in the specified unit.
 
-        lower_boundary=lower_boundary.to(self.restframe_wavelengths.unit)
-        upper_boundary=upper_boundary.to(self.restframe_wavelengths.unit)
+        Parameters
+        ----------
+        unit : str, optional
+            The desired flux unit. Can be 'lambda' or 'nu'. Defaults to 'lambda'.
+        lower_boundary : astropy.units.Quantity, optional
+            The lower boundary to apply to the spectrum.
+        upper_boundary : astropy.units.Quantity, optional
+            The upper boundary to apply to the spectrum.
 
-        self.set_boundarys(lower_boundary, upper_boundary)
+        Returns
+        -------
+        astropy.nddata.NDDataArray
+            The processed flux array.
+        """
+        # The original logic of get_flux was slightly confusing.
+        # This implementation first sets the boundaries and then returns the requested flux.
+        if lower_boundary is not None or upper_boundary is not None:
+            self.set_boundarys(lower_boundary, upper_boundary)
 
-        return self.processing_flux
+        if unit.lower() in ['lambda', 'f_lambda', 'flambda']:
+            return self.processing_flux_lambda
+        elif unit.lower() in ['nu', 'f_nu', 'fnu']:
+            return self.processing_flux_nu
+        else:
+            raise ValueError("Unit must be 'lambda' or 'nu'.")
 
-    def show(self, if_show=True):
-        """Display the processed spectrum.
+    def show(self, if_show=True, flux_type='flambda', plot_range='processing',if_RestFrame=True):
+        """
+        Display the processed spectrum (defaults to F_lambda vs wavelength).
+
         Parameters
         ----------
         if_show : bool, optional
             If True, the plot will be displayed. Default is True.
+        flux_type : str, optional
+            The type of flux to plot. Can be 'flambda' or 'fnu'.
+            Default is 'flambda'.
+        plot_range : str, optional
+            The range of the spectrum to plot. Can be 'processing' or 'full'.
+            Default is 'processing'.
+
+        if_RestFrame : bool, optional
+            If True, the rest-frame spectrum will be plotted. Default is True.
+
         Returns
         -------
         fig, ax : matplotlib.figure.Figure, matplotlib.axes.Axes
-
         """
         fig, ax = plt.subplots(figsize=(20, 10))
-        if self.processing_wavelengths is not None and self.processing_flux is not None:
-            if isinstance(self.processing_wavelengths, astropy.nddata.NDDataArray):
-                wave_data = self.processing_wavelengths.data
-                wave_unit = self.processing_wavelengths.unit
-            else:
-                wave_data = self.processing_wavelengths
-                wave_unit = None
 
-            if isinstance(self.processing_flux, astropy.nddata.NDDataArray):
-                flux_data = self.processing_flux.data
-                flux_unit = self.processing_flux.unit
-            else:
-                flux_data = self.processing_flux
-                flux_unit = None
+        if self.processing_wavelengths is not None and self.processing_flux_lambda is not None:
+            if flux_type.lower() not in ['flambda', 'f_lambda', 'lambda', 'fnu', 'f_nu', 'nu']:
+                raise ValueError(
+                    "flux_type must be 'flambda' or 'f_lambda' for F_lambda flux.")
+            if plot_range.lower() not in ['processing', 'full']:
+                raise ValueError(
+                    "plot_range must be 'processing' or 'full'.")
+            if flux_type.lower() == 'flambda' or flux_type.lower() == 'f_lambda' or flux_type.lower() == 'lambda':
 
-            ax.plot(wave_data, flux_data,
-                    label='Processed Spectrum', color='blue')
-            ax.set_xlabel(
-                f'Wavelength ({wave_unit})' if wave_unit else 'Wavelength')
-            ax.set_ylabel(f'Flux ({flux_unit})' if flux_unit else 'Flux')
+                if plot_range.lower() == 'full':
+                    if if_RestFrame:
+                        wave_data = self.restframe_wavelengths.data
+                        wave_unit = self.restframe_wavelengths.unit
+
+                        flux_data = self.restframe_flux_lambda.data
+                        flux_unit = self.restframe_flux_lambda.unit
+                    else:
+                        wave_data = self.observed_wavelengths.data
+                        wave_unit = self.observed_wavelengths.unit
+
+                        flux_data = self.observed_flux_lambda.data
+                        flux_unit = self.observed_flux_lambda.unit
+                elif plot_range.lower() == 'processing':
+                    if if_RestFrame:
+                        wave_data = self.processing_wavelengths.data
+                        wave_unit = self.processing_wavelengths.unit
+
+                        flux_data = self.processing_flux_lambda.data
+                        flux_unit = self.processing_flux_lambda.unit
+                    else:
+                        wave_data = self.observed_wavelengths.data
+                        wave_unit = self.observed_wavelengths.unit
+
+                        flux_data = self.observed_flux_lambda.data
+                        flux_unit = self.observed_flux_lambda.unit
+
+            elif flux_type.lower() == 'fnu' or flux_type.lower() == 'f_nu' or flux_type.lower() == 'nu':
+                if plot_range.lower() == 'full':
+                    if if_RestFrame:
+                        wave_data = self.restframe_wavelengths.data
+                        wave_unit = self.restframe_wavelengths.unit
+
+                        flux_data = self.restframe_flux_nu.data
+                        flux_unit = self.restframe_flux_nu.unit
+                    else:
+                        wave_data = self.observed_wavelengths.data
+                        wave_unit = self.observed_wavelengths.unit
+
+                        flux_data = self.observed_flux_nu.data
+                        flux_unit = self.observed_flux_nu.unit
+                elif plot_range.lower() == 'processing':
+                    if if_RestFrame:
+                        wave_data = self.processing_wavelengths.data
+                        wave_unit = self.processing_wavelengths.unit
+
+                        flux_data = self.processing_flux_nu.data
+                        flux_unit = self.processing_flux_nu.unit
+                    else:
+                        wave_data = self.observed_wavelengths.data
+                        wave_unit = self.observed_wavelengths.unit
+
+                        flux_data = self.observed_flux_nu.data
+                        flux_unit = self.observed_flux_nu.unit
+            else:
+                raise ValueError(
+                    "flux_type must be 'flambda' or 'fnu'.")
+
+            ax.plot(wave_data, flux_data,label=f'Processed Spectrum ({flux_type})', color='blue')
+
+            if flux_type.lower() in ['flambda', 'f_lambda', 'lambda']:
+                ax.set_ylabel(f'Rest Flux ({flux_unit})' if if_RestFrame else f'Observed Flux ({flux_unit})')
+                ax.set_xlabel(f'Rest Wavelength ({wave_unit})' if if_RestFrame else f'Observed Wavelength ({wave_unit})')
+            elif flux_type.lower() in ['fnu', 'f_nu', 'nu']:
+                ax.set_xlabel(f'Rest Wavelength ({wave_unit})' if if_RestFrame else f'Observed Wavelength ({wave_unit})')
+                ax.set_ylabel(f'Rest Flux ({flux_unit})' if if_RestFrame else f'Observed Flux ({flux_unit})')
             ax.set_title(f'Spectrum at Redshift {self.redshift.value:.3f}')
             ax.legend()
             if if_show:
@@ -663,26 +730,27 @@ class Spectrum_1d:
     def dual_boundarys(self, if_process=False, unit=None):
         """
         Return the lower and upper boundaries of the spectrum.
+
+        Parameters
+        ----------
+        if_process : bool, optional
+            If True, returns the boundaries of the currently processed data.
+            Otherwise, returns the boundaries of the full rest-frame spectrum. Default is False.
+        unit : astropy.units.Unit, optional
+            The unit to which the boundaries should be converted.
+
         Returns
         -------
         tuple
             A tuple containing the lower and upper boundaries of the spectrum.
-            If no boundaries are set, returns (None, None).
         """
-        if if_process:
-            lower_boundary = self.processing_wavelengths.data.min() * \
-                self.processing_wavelengths.unit
-            upper_boundary = self.processing_wavelengths.data.max() * \
-                self.processing_wavelengths.unit
-            if unit is not None:
-                lower_boundary = lower_boundary.to(unit)
-                upper_boundary = upper_boundary.to(unit)
-            return lower_boundary, upper_boundary
-        if self.restframe_wavelengths is not None:
-            lower_boundary = self.restframe_wavelengths.data.min() * \
-                self.restframe_wavelengths.unit
-            upper_boundary = self.restframe_wavelengths.data.max() * \
-                self.restframe_wavelengths.unit
+        wavelengths_to_use = self.processing_wavelengths if if_process else self.restframe_wavelengths
+        mask= self.restframe_flux_lambda.data!=0
+        wavelengths_to_use = wavelengths_to_use[mask]
+
+        if wavelengths_to_use is not None:
+            lower_boundary = wavelengths_to_use.data.min() * wavelengths_to_use.unit
+            upper_boundary = wavelengths_to_use.data.max() * wavelengths_to_use.unit
             if unit is not None:
                 lower_boundary = lower_boundary.to(unit)
                 upper_boundary = upper_boundary.to(unit)
@@ -691,9 +759,10 @@ class Spectrum_1d:
         return None, None
 
     def reset(self):
-        """Reset the processing wavelengths and flux to the original observed values."""
+        """Reset the processing wavelengths and fluxes to the original rest-frame values."""
         self.processing_wavelengths = self.restframe_wavelengths
-        self.processing_flux = self.observed_flux_lambda if self.observed_flux_lambda is not None else self.observed_flux_nu
+        self.processing_flux_lambda = self.restframe_flux_lambda
+        self.processing_flux_nu = self.restframe_flux_nu
         self.processing_wavelengths = self.processing_wavelengths.convert_unit_to(
             astropy.units.AA)
 
@@ -702,7 +771,6 @@ class Spectrum_1d:
         wave_data_repr = "N/A"
         num_points_str = "N/A"
 
-        # Check restframe wavelengths
         if self.restframe_wavelengths is not None:
             rest_wave_values = self.restframe_wavelengths.data
             if isinstance(rest_wave_values, astropy.units.Quantity):
@@ -885,7 +953,7 @@ class SpectralLineFitter:
             # Extract observed wavelengths and fluxes
             obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
                 astropy.units.AA).data
-            obs_flux_lambda = self.spectrum.processing_flux.data
+            obs_flux_lambda = self.spectrum.processing_flux_lambda.data
 
             # Initial guess for the power law parameters
             if initial_guess is None:
@@ -1015,7 +1083,7 @@ class SpectralLineFitter:
             # Extract observed wavelengths and fluxes from self.spectrum
             obs_wavelengths = self.spectrum.processing_wavelengths.convert_unit_to(
                 astropy.units.AA).data
-            obs_flux_lambda = self.spectrum.processing_flux.convert_unit_to(
+            obs_flux_lambda = self.spectrum.processing_flux_lambda.convert_unit_to(
                 astropy.units.erg / (astropy.units.cm**2 * astropy.units.s * astropy.units.AA)).data
 
             # NumPy Array now
@@ -1045,19 +1113,19 @@ class SpectralLineFitter:
             y_fit = self.gaussian_with_offset(obs_wavelengths, *popt)
 
             integrated_flux, integration_error = (scipy.integrate.quad(self.gaussian, obs_wavelengths.min(), obs_wavelengths.max(
-            ), args=tuple(popt[0:3]), epsabs=0)) * self.spectrum.processing_flux.unit * self.spectrum.processing_wavelengths.unit
+            ), args=tuple(popt[0:3]), epsabs=0)) * self.spectrum.processing_flux_lambda.unit * self.spectrum.processing_wavelengths.unit
 
             return {
                 'success': True,
                 'parameters': {
-                    'amplitude': popt[0] * self.spectrum.processing_flux.unit,
+                    'amplitude': popt[0] * self.spectrum.processing_flux_lambda.unit,
                     'mean': popt[1] * astropy.units.AA,
                     'stddev': popt[2] * astropy.units.AA,
-                    'offset': popt[3] * self.spectrum.processing_flux.unit
+                    'offset': popt[3] * self.spectrum.processing_flux_lambda.unit
                 },
                 'fitted_curve': astropy.nddata.NDDataArray(
                     data=y_fit,
-                    unit=self.spectrum.processing_flux.unit
+                    unit=self.spectrum.processing_flux_lambda.unit
                 ),
                 'fitted_wavelengths': astropy.nddata.NDDataArray(
                     data=obs_wavelengths,
@@ -1065,7 +1133,7 @@ class SpectralLineFitter:
                 ),
                 'residual_flux': astropy.nddata.NDDataArray(
                     data=obs_flux_lambda - y_fit,
-                    unit=self.spectrum.processing_flux.unit
+                    unit=self.spectrum.processing_flux_lambda.unit
                 ),
                 'covariance': pcov,
                 'integrated_flux': integrated_flux,
@@ -1560,10 +1628,929 @@ class SpectralLineFitter:
         plt.close()
 
 
+# class Spectrum_Catalog:
+#     def __init__(self):
+#         self.catalog = collections.defaultdict(lambda: {
+#             'survey_id': None,
+#             'prism_filepath': None,
+#             'prism_redshift': None,
+#             'determined_redshift': None,
+#             'grating_filepaths': {},
+#             'grating_redshifts': {},
+#             'file_count': 0,
+#             'available_filters': set(),
+#             'properties': {}
+#         })
+
+#         self.filepath_pattern_re = r'^/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^_]+)_([^_]+)_([a-zA-Z0-9_]+)\.spec.fits$'
+
+#     def process_files(self, filepath_list, DJA_Catalog_DataFrame=None):
+#         """
+#         Process a list of file paths and populate the catalog with spectrum information.
+
+#         Parameters
+#         ----------
+#         filepath_list : list of str
+#             A list of file paths to process.
+
+#         DJA_Catalog_DataFrame : pd.DataFrame, optional
+#             A DataFrame containing the catalog data, used to load redshift information for prism spectra.
+#         If provided, it will be used to load the redshift for prism spectra.
+#         If None, the redshift will not be loaded for prism spectra.
+
+#         Returns
+#         -------
+#         None
+#         """
+
+#         for filepath_str in tqdm.tqdm(filepath_list):
+#             match = re.match(self.filepath_pattern_re, filepath_str)
+
+#             if match:
+#                 re_group = match.groups()
+#                 survey_name = re_group[4]
+#                 filter_name = re_group[5]
+#                 survey_id_subid = f"{survey_name}_{re_group[6]}"
+
+#                 entry = self.catalog[survey_id_subid]
+#                 entry['survey_id'] = survey_name
+#                 entry['id'] = survey_id_subid
+#                 entry['file_count'] += 1
+#                 entry['available_filters'].add(filter_name)
+
+#                 if filter_name == 'prism-clear':
+#                     entry['prism_filepath'] = filepath_str
+#                     entry['prism_redshift'] = Load_Spectrum_Redshift(
+#                         filepath_str, DJA_Catalog_DataFrame)
+#                 else:
+#                     entry['grating_filepaths'][filter_name] = filepath_str
+#                     entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
+#                         filepath_str, DJA_Catalog_DataFrame)
+
+#     def load_spectrum_info(self, survey_id_subid):
+#         """
+#         Load the spectrum information for a given survey_id_subid.
+
+#         Parameters
+#         ----------
+#         survey_id_subid : str
+#             The survey_id_subid of the spectrum to retrieve.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary containing the spectrum information, or None if not found.
+#         """
+#         return dict(self.catalog.get(survey_id_subid, None))
+
+#     def load_spectrums_with_prism(self):
+#         """
+#         Load a list of survey_id_subid that have prism spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding prism file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is not None}
+
+#     def load_spectrums_with_grating(self):
+#         """
+#         Get a list of survey_id_subid that have grating spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['grating_filepaths']}
+
+#     def load_spectrums_missing_prism(self):
+#         """
+#         Get a list of survey_id_subid that do not have prism spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is None}
+
+#     def get_summary_stats(self):
+#         """
+#         Get summary statistics of the catalog.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary containing the total number of spectra, number of unique objects, and number of available filters.
+#         """
+#         all_filters = set()
+
+#         total_objects = len(self.catalog)
+#         with_prism = len(self.load_spectrums_with_prism())
+#         with_grating = len(self.load_spectrums_with_grating())
+#         without_prism = len(self.load_spectrums_missing_prism())
+#         total_spectra = sum(entry['file_count']
+#                             for entry in self.catalog.values())
+#         total_grating_spectra = sum(
+#             len(entry['grating_filepaths']) for entry in self.catalog.values())
+#         total_prism_spectra = sum(
+#             1 for entry in self.catalog.values() if entry['prism_filepath'] is not None)
+
+#         for entry in self.catalog.values():
+#             all_filters.update(entry['available_filters'])
+
+#         return {
+#             'total_objects': total_objects,
+#             'with_prism': with_prism,
+#             'without_prism': without_prism,
+#             'with_grating': with_grating,
+#             'total_spectra': total_spectra,
+#             'total_prism_spectra': total_prism_spectra,
+#             'total_grating_spectra': total_grating_spectra
+#         }
+
+#     def to_dataframe(self):
+#         """
+#         Convert the catalog to a pandas DataFrame with dictionaries preserved.
+
+#         Returns
+#         -------
+#         pd.DataFrame
+#             A DataFrame containing the spectrum information with dictionaries and sets preserved.
+#         """
+#         data = []
+
+#         for survey_id_subid, entry in self.catalog.items():
+#             row = {
+#                 'survey_id_subid': survey_id_subid,
+#                 'survey_id': entry['survey_id'],
+#                 'prism_filepath': entry['prism_filepath'],
+#                 'prism_redshift': entry['prism_redshift'],
+#                 # Keep as dict
+#                 'grating_filepaths': entry['grating_filepaths'],
+#                 # Keep as dict
+#                 'grating_redshifts': entry['grating_redshifts'],
+#                 'determined_redshift': entry['determined_redshift'],
+#                 'file_count': entry['file_count'],
+#                 'available_filters': entry['available_filters'],  # Keep as set
+#                 'properties': entry['properties']  # Keep as dict
+#             }
+#             data.append(row)
+
+#         return pd.DataFrame(data)
+
+#     def save_catalog_to_pkl(self, filename):
+#         """
+#         Save the catalog to a pickle file.
+
+#         Parameters
+#         ----------
+#         filename : str
+#             The name of the file to save the catalog to.
+#         """
+#         df = self.to_dataframe()
+#         df.to_pickle(filename)
+
+#     def load_from_pkl(self, pkl_filepath):
+#         """
+#         Load catalog data from a pickle file.
+
+#         Parameters
+#         ----------
+#         pkl_filepath : str
+#             Path to the pickle file to load.
+
+#         Returns
+#         -------
+#         None
+#         """
+#         if not os.path.exists(pkl_filepath):
+#             raise FileNotFoundError(f"The file {pkl_filepath} does not exist.")
+#         if not pkl_filepath.endswith('.pkl'):
+#             raise ValueError(
+#                 f"The file {pkl_filepath} is not a valid pickle file.")
+
+#         df = pd.read_pickle(pkl_filepath)
+
+#         # Clear existing catalog
+#         self.catalog = collections.defaultdict(lambda: {
+#             'survey_id': None,
+#             'prism_filepath': None,
+#             'prism_redshift': None,
+#             'grating_filepaths': {},
+#             'grating_redshifts': {},
+#             'file_count': 0,
+#             'available_filters': set(),
+#             'properties': {},
+#             'determined_redshift': None
+#         })
+
+#         for _, row in df.iterrows():
+#             survey_id_subid = row['survey_id_subid']
+
+#             # Basic information
+#             entry = self.catalog[survey_id_subid]
+#             entry['survey_id'] = row['survey_id']
+#             entry['id'] = survey_id_subid
+#             entry['prism_filepath'] = row['prism_filepath'] if pd.notna(
+#                 row['prism_filepath']) else None
+#             entry['prism_redshift'] = row['prism_redshift'] * \
+#                 astropy.units.dimensionless_unscaled if pd.notna(
+#                     row['prism_redshift']) else None
+#             entry['file_count'] = int(row['file_count'])
+#             entry['available_filters'] = set(filter for filter in row['available_filters']) if pd.notna(
+#                 row['available_filters']) else set()
+#             entry['properties'] = row['properties'] if pd.notna(
+#                 row['properties']) else {}
+#             entry['determined_redshift'] = row['determined_redshift'] if pd.notna(
+#                 row['determined_redshift']) else None
+
+#             # Handle grating_filepaths - keep as dict if already dict
+#             if isinstance(row['available_filters'], set):
+#                 for filter_name in row['available_filters']:
+#                     if filter_name == 'prism-clear':
+#                         continue
+#                     entry['grating_filepaths'][filter_name] = row['grating_filepaths'].get(
+#                         filter_name, None)
+#                     entry['grating_redshifts'][filter_name] = row['grating_redshifts'].get(
+#                         filter_name, None)
+
+#     def find_complete_objects(self, required_filters=None):
+#         """
+#         Find objects that have all required filters and a prism file.
+
+#         Parameters
+#         ----------
+#         required_filters : list of str, optional
+#             A list of filter names that must be present for an object to be considered complete.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding catalog entries as values.
+#         """
+#         if required_filters is None:
+#             required_filters = set()
+#         else:
+#             required_filters = set(required_filters)
+
+#         complete_objects = {}
+#         for survey_id_subid, entry in self.catalog.items():
+#             if (entry['prism_filepath'] is not None and required_filters.issubset(entry['available_filters'])):
+#                 complete_objects[survey_id_subid] = entry
+
+#         return complete_objects
+
+#     def catalog_iterator(self,sample_num=None):
+#         """
+#         Returns an iterator over the catalog entries.
+
+#         Yields
+#         -------
+#         tuple
+#             A tuple containing the survey_id_subid and the corresponding catalog entry.
+#         """
+#         if sample_num is not None:
+#             count = 0
+#             for index in self.catalog.keys():
+#                 if self.catalog[index]['properties'].get('Sample_Flag', False) is True:
+#                     yield index, self.catalog[index]
+#                     count += 1
+#                     if count >= sample_num:
+#                         break
+#         else:
+#             for index in self.catalog.keys():
+#                 yield index, self.catalog[index]
+
+#     def determine_redshift(self, survey_id_subid):
+#         """
+#         Determine the redshift for a given survey_id_subid. And fill the `determined_redshift` field in the catalog entry.
+#         If two redshifts are available and within 5% of each other, it will use the average of the redshifts. If the difference is greater than 5%, it will use the prism redshift if available, or the grating redshift if only one is available.
+#         If more than one grating redshift is available, it will choose the average of the two most similar redshifts.
+#         If no redshift is available, it will return None.
+#         If only one redshift is available, it will use that one.
+#         Parameters
+#         ----------
+#         survey_id_subid : str
+#             The survey_id_subid of the spectrum to determine the redshift for.
+#         Returns
+#         -------
+#         astropy.units.Quantity or None
+#             The determined redshift as an astropy.units.Quantity object, or None if no redshift could be determined.
+#         """
+#         if survey_id_subid not in self.catalog:
+#             raise ValueError(
+#                 f"Survey ID {survey_id_subid} not found in the catalog.")
+
+#         entry = self.catalog[survey_id_subid]
+#         entry['properties']['redshift_conflict'] = False
+
+#         prism_redshift = entry['prism_redshift']
+#         grating_redshifts = [
+#             value for value in entry['grating_redshifts'].values() if not np.isnan(value)]
+
+#         # No redshifts available
+#         if prism_redshift is None and not grating_redshifts:
+#             return None
+
+#         # Only prism redshift available
+#         if prism_redshift is not None and not grating_redshifts:
+#             entry['determined_redshift'] = prism_redshift
+#             return prism_redshift
+
+#         # Only one grating redshift available, no prism
+#         if prism_redshift is None and len(grating_redshifts) == 1:
+#             entry['determined_redshift'] = grating_redshifts[0]
+#             return grating_redshifts[0]
+
+#         # One prism and one grating redshift
+#         if prism_redshift is not None and len(grating_redshifts) == 1:
+#             if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.05:
+#                 entry['determined_redshift'] = (
+#                     prism_redshift + grating_redshifts[0]) / 2
+#                 return entry['determined_redshift']
+#             else:
+#                 entry['determined_redshift'] = prism_redshift
+#                 entry['properties']['redshift_conflict'] = True
+#                 return prism_redshift
+
+#         # Multiple redshifts available (either prism + multiple grating, or just multiple grating)
+#         all_redshifts = []
+#         if prism_redshift is not None:
+#             all_redshifts.append(prism_redshift)
+#         all_redshifts.extend(grating_redshifts)
+
+#         # Find the two most similar redshifts
+#         min_diff = float('inf')
+#         best_pair = None
+#         for i in range(len(all_redshifts)):
+#             for j in range(i + 1, len(all_redshifts)):
+#                 diff = abs(all_redshifts[i] - all_redshifts[j])
+#                 if diff < min_diff:
+#                     min_diff = diff
+#                     best_pair = (all_redshifts[i], all_redshifts[j])
+
+#         if best_pair:
+#             # Check if the two nearest redshifts are within 5%
+#             relative_diff = abs(
+#                 best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
+#             avg_redshift = (best_pair[0] + best_pair[1]) / 2
+
+#             if relative_diff >= 0.05:
+#                 entry['properties']['redshift_conflict'] = True
+
+#             entry['determined_redshift'] = avg_redshift
+#             return avg_redshift
+#         else:
+#             # Fallback (should not happen if we have redshifts)
+#             entry['determined_redshift'] = all_redshifts[0]
+#             return all_redshifts[0]
+
+#     def update_catalog_item(self, id, catalog):
+#         """
+#         Update a catalog item with the given id and catalog data.
+
+#         Parameters
+#         ----------
+#         id : str
+#             The survey_id_subid of the spectrum to update.
+#         catalog : dict
+#             The catalog data to update the item with.
+#         """
+#         if id not in self.catalog:
+#             raise ValueError(f"Survey ID {id} not found in the catalog.")
+
+#         self.catalog[id].update(catalog)
+
+#     def sample_num(self):
+#         """
+#         Returns the number of samples in the catalog.
+
+#         Returns
+#         -------
+#         int
+#             The number of samples in the catalog.
+#         """
+#         count = 0
+#         for id, catalog in self.catalog.items():
+#             if catalog['properties']['Sample_Flag'] is True:
+#                 count += 1
+#         return count
+
+#     def __repr__(self):
+#         """
+#         Returns a panda DataFrame representation of the catalog.
+#         """
+#         df = self.to_dataframe()
+#         if df.empty:
+#             return "Spectrum_Catalog is empty."
+#         else:
+#             return df.to_string(index=False, max_rows=10, max_colwidth=50, justify='left') + "\n\n" + f"Total objects: {len(self.catalog)}"
+
+# class Spectrum_Catalog:
+#     def __init__(self):
+#         # 初始化一个默认的字段集合
+#         self.default_fields = {
+#             'survey_id_subid': None,
+#             'prism_filepath': None,
+#             'prism_redshift': None,
+#             'determined_redshift': None,
+#             'grating_filepaths': {},
+#             'grating_redshifts': {},
+#             'file_count': 0,
+#             'available_filters': set(),
+#             'properties': {}
+#         }
+#         # 使用一个函数来创建新的条目，这个函数会用到当前的默认字段
+#         self.catalog = collections.defaultdict(lambda: self.default_fields.copy())
+
+#         self.filepath_pattern_re = r'^/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^_]+)_([^_]+)_([a-zA-Z0-9_]+)\.spec.fits$'
+
+#     def add_property_field(self, field_name, default_value=None):
+#         """
+#         为所有 catalog 条目动态添加一个新的顶级字段。
+
+#         Parameters
+#         ----------
+#         field_name : str
+#             要添加的新字段的名称。
+#         default_value : any, optional
+#             新字段的默认值, by default None
+#         """
+#         if field_name not in self.default_fields:
+#             # 更新默认字段模板，以便新创建的条目也包含这个字段
+#             self.default_fields[field_name] = default_value
+#             # 遍历所有现有条目，为它们添加这个新字段
+#             for survey_id in self.catalog:
+#                 if field_name not in self.catalog[survey_id]:
+#                     self.catalog[survey_id][field_name] = default_value
+
+#     def update_entry_property(self, survey_id_subid, property_name, value):
+#         """
+#         更新指定条目的一个顶级属性。
+
+#         如果该属性不存在，它会根据需要被添加。
+
+#         Parameters
+#         ----------
+#         survey_id_subid : str
+#             要更新的条目的 ID。
+#         property_name : str
+#             要更新的属性的名称。
+#         value : any
+#             要设置的新值。
+#         """
+#         if survey_id_subid not in self.catalog:
+#             raise KeyError(f"ID '{survey_id_subid}' 在 catalog 中未找到。")
+
+#         # 检查这个字段是否是已知的字段，如果不是，则将其添加到所有条目中
+#         if property_name not in self.default_fields:
+#             self.add_property_field(property_name)
+
+#         self.catalog[survey_id_subid][property_name] = value
+
+
+#     def process_files(self, filepath_list, DJA_Catalog_DataFrame=None):
+#         """
+#         Process a list of file paths and populate the catalog with spectrum information.
+
+#         Parameters
+#         ----------
+#         filepath_list : list of str
+#             A list of file paths to process.
+
+#         DJA_Catalog_DataFrame : pd.DataFrame, optional
+#             A DataFrame containing the catalog data, used to load redshift information for prism spectra.
+#         If provided, it will be used to load the redshift for prism spectra.
+#         If None, the redshift will not be loaded for prism spectra.
+
+#         Returns
+#         -------
+#         None
+#         """
+
+#         for filepath_str in tqdm.tqdm(filepath_list):
+#             match = re.match(self.filepath_pattern_re, filepath_str)
+
+#             if match:
+#                 re_group = match.groups()
+#                 survey_name = re_group[4]
+#                 filter_name = re_group[5]
+#                 survey_id_subid = f"{survey_name}_{re_group[6]}"
+
+#                 entry = self.catalog[survey_id_subid]
+#                 entry['survey_id'] = survey_name
+#                 #entry['survey_id_subid'] = survey_id_subid
+#                 entry['file_count'] += 1
+#                 entry['available_filters'].add(filter_name)
+
+#                 if filter_name == 'prism-clear':
+#                     entry['prism_filepath'] = filepath_str
+#                     entry['prism_redshift'] = Load_Spectrum_Redshift(filepath_str, DJA_Catalog_DataFrame)
+#                 else:
+#                     entry['grating_filepaths'][filter_name] = filepath_str
+#                     entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(filepath_str, DJA_Catalog_DataFrame)
+
+#     def load_spectrum_info(self, survey_id_subid):
+#         """
+#         Load the spectrum information for a given survey_id_subid.
+
+#         Parameters
+#         ----------
+#         survey_id_subid : str
+#             The survey_id_subid of the spectrum to retrieve.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary containing the spectrum information, or None if not found.
+#         """
+#         return dict(self.catalog.get(survey_id_subid, None))
+
+
+
+#     def load_spectrums_with_prism(self):
+#         """
+#         Load a list of survey_id_subid that have prism spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding prism file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is not None}
+
+#     def load_spectrums_with_grating(self):
+#         """
+#         Get a list of survey_id_subid that have grating spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['grating_filepaths']}
+
+#     def load_spectrums_missing_prism(self):
+#         """
+#         Get a list of survey_id_subid that do not have prism spectra.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding grating file paths as values.
+#         """
+#         return {survey_id_subid: catalog for survey_id_subid, catalog in self.catalog.items() if catalog['prism_filepath'] is None}
+
+#     def get_summary_stats(self):
+#         """
+#         Get summary statistics of the catalog.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary containing the total number of spectra, number of unique objects, and number of available filters.
+#         """
+#         all_filters = set()
+
+#         total_objects = len(self.catalog)
+#         with_prism = len(self.load_spectrums_with_prism())
+#         with_grating = len(self.load_spectrums_with_grating())
+#         without_prism = len(self.load_spectrums_missing_prism())
+#         total_spectra = sum(entry['file_count']
+#                             for entry in self.catalog.values())
+#         total_grating_spectra = sum(
+#             len(entry['grating_filepaths']) for entry in self.catalog.values())
+#         total_prism_spectra = sum(
+#             1 for entry in self.catalog.values() if entry['prism_filepath'] is not None)
+
+#         for entry in self.catalog.values():
+#             all_filters.update(entry['available_filters'])
+
+#         return {
+#             'total_objects': total_objects,
+#             'with_prism': with_prism,
+#             'without_prism': without_prism,
+#             'with_grating': with_grating,
+#             'total_spectra': total_spectra,
+#             'total_prism_spectra': total_prism_spectra,
+#             'total_grating_spectra': total_grating_spectra
+#         }
+
+#     def to_dataframe(self):
+#         """
+#         Convert the catalog to a pandas DataFrame with dictionaries preserved.
+
+#         Returns
+#         -------
+#         pd.DataFrame
+#             A DataFrame containing the spectrum information with dictionaries and sets preserved.
+#         """
+#         # data = []
+
+#         # for survey_id_subid, entry in self.catalog.items():
+#         #     row = {
+#         #         'survey_id_subid': survey_id_subid,
+#         #         'survey_id': entry['survey_id'],
+#         #         'prism_filepath': entry['prism_filepath'],
+#         #         'prism_redshift': entry['prism_redshift'],
+#         #         # Keep as dict
+#         #         'grating_filepaths': entry['grating_filepaths'],
+#         #         # Keep as dict
+#         #         'grating_redshifts': entry['grating_redshifts'],
+#         #         'determined_redshift': entry['determined_redshift'],
+#         #         'file_count': entry['file_count'],
+#         #         'available_filters': entry['available_filters'],  # Keep as set
+#         #         'properties': entry['properties']  # Keep as dict
+#         #     }
+#         #     data.append(row)
+
+#         if not self.catalog:
+#             return pd.DataFrame()
+
+
+#         df = pd.DataFrame.from_dict(self.catalog, orient='index')
+
+#         df.reset_index(inplace=True)
+
+#         df.rename(columns={'index': 'survey_id_subid'}, inplace=True)
+
+#         return df
+
+
+#     def save_catalog_to_pkl(self, filename):
+#         """
+#         Save the catalog to a pickle file.
+
+#         Parameters
+#         ----------
+#         filename : str
+#             The name of the file to save the catalog to.
+#         """
+#         df = self.to_dataframe()
+#         df.to_pickle(filename)
+
+#     def load_from_pkl(self, pkl_filepath):
+#         """
+#         Load catalog data from a pickle file.
+
+#         Parameters
+#         ----------
+#         pkl_filepath : str
+#             Path to the pickle file to load.
+
+#         Returns
+#         -------
+#         None
+#         """
+#         if not os.path.exists(pkl_filepath):
+#             raise FileNotFoundError(f"The file {pkl_filepath} does not exist.")
+#         if not pkl_filepath.endswith('.pkl'):
+#             raise ValueError(
+#                 f"The file {pkl_filepath} is not a valid pickle file.")
+
+#         df = pd.read_pickle(pkl_filepath)
+
+#         # 从 DataFrame 的列中推断出所有的字段
+#         self.default_fields = {col: None for col in df.columns if col != 'survey_id_subid'}
+#         # 确保一些字段是正确的类型
+#         self.default_fields['grating_filepaths'] = {}
+#         self.default_fields['grating_redshifts'] = {}
+#         self.default_fields['available_filters'] = set()
+#         self.default_fields['properties'] = {}
+
+#         self.catalog.clear()
+
+#         df.set_index('survey_id_subid', inplace=True)
+
+#         reconstructed_dict = df.to_dict(orient='index')
+
+#         self.catalog.update(reconstructed_dict)
+
+#     def find_complete_objects(self, required_filters=None):
+#         """
+#         Find objects that have all required filters and a prism file.
+
+#         Parameters
+#         ----------
+#         required_filters : list of str, optional
+#             A list of filter names that must be present for an object to be considered complete.
+
+#         Returns
+#         -------
+#         dict
+#             A dictionary with survey_id_subid as keys and their corresponding catalog entries as values.
+#         """
+#         if required_filters is None:
+#             required_filters = set()
+#         else:
+#             required_filters = set(required_filters)
+
+#         complete_objects = {}
+#         for survey_id_subid, entry in self.catalog.items():
+#             if (entry['prism_filepath'] is not None and required_filters.issubset(entry['available_filters'])):
+#                 complete_objects[survey_id_subid] = entry
+
+#         return complete_objects
+
+#     def catalog_iterator(self, sample_num=None):
+#         """
+#         Returns an iterator over the catalog entries.
+
+#         Yields
+#         -------
+#         tuple
+#             A tuple containing the survey_id_subid and the corresponding catalog entry.
+#         """
+#         # 使用 .items() 方法可以高效地同时遍历字典的键和值
+#         if sample_num is not None:
+#             count = 0
+#             # 遍历 catalog 中的每一对 (键, 值)
+#             for survey_id_subid, entry in self.catalog.items():
+#                 # 产生一个 (键, 值) 元组
+#                 yield survey_id_subid, entry
+#                 count += 1
+#                 if count >= sample_num:
+#                     break
+#         else:
+#             # 如果没有数量限制，直接遍历并产生所有的 (键, 值) 对
+#             for survey_id_subid, entry in self.catalog.items():
+#                 yield survey_id_subid, entry
+
+#     def determine_redshift(self, survey_id_subid):
+#         """
+#         Determine the redshift for a given survey_id_subid. And fill the `determined_redshift` field in the catalog entry.
+#         If two redshifts are available and within 5% of each other, it will use the average of the redshifts. If the difference is greater than 5%, it will use the prism redshift if available, or the grating redshift if only one is available.
+#         If more than one grating redshift is available, it will choose the average of the two most similar redshifts.
+#         If no redshift is available, it will return None.
+#         If only one redshift is available, it will use that one.
+#         Parameters
+#         ----------
+#         survey_id_subid : str
+#             The survey_id_subid of the spectrum to determine the redshift for.
+#         Returns
+#         -------
+#         astropy.units.Quantity or None
+#             The determined redshift as an astropy.units.Quantity object, or None if no redshift could be determined.
+#         """
+#         if survey_id_subid not in self.catalog:
+#             raise ValueError(
+#                 f"Survey ID {survey_id_subid} not found in the catalog.")
+
+#         entry = self.catalog[survey_id_subid]
+#         entry['properties']['redshift_conflict'] = False
+
+#         prism_redshift = entry['prism_redshift']
+#         grating_redshifts = [
+#             value for value in entry['grating_redshifts'].values() if not np.isnan(value)]
+
+#         # No redshifts available
+#         if prism_redshift is None and not grating_redshifts:
+#             return None
+
+#         # Only prism redshift available
+#         if prism_redshift is not None and not grating_redshifts:
+#             entry['determined_redshift'] = prism_redshift
+#             return prism_redshift
+
+#         # Only one grating redshift available, no prism
+#         if prism_redshift is None and len(grating_redshifts) == 1:
+#             entry['determined_redshift'] = grating_redshifts[0]
+#             return grating_redshifts[0]
+
+#         # One prism and one grating redshift
+#         if prism_redshift is not None and len(grating_redshifts) == 1:
+#             if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.05:
+#                 entry['determined_redshift'] = (
+#                     prism_redshift + grating_redshifts[0]) / 2
+#                 return entry['determined_redshift']
+#             else:
+#                 entry['determined_redshift'] = prism_redshift
+#                 entry['properties']['redshift_conflict'] = True
+#                 return prism_redshift
+
+#         # Multiple redshifts available (either prism + multiple grating, or just multiple grating)
+#         all_redshifts = []
+#         if prism_redshift is not None:
+#             all_redshifts.append(prism_redshift)
+#         all_redshifts.extend(grating_redshifts)
+
+#         # Find the two most similar redshifts
+#         min_diff = float('inf')
+#         best_pair = None
+#         for i in range(len(all_redshifts)):
+#             for j in range(i + 1, len(all_redshifts)):
+#                 diff = abs(all_redshifts[i] - all_redshifts[j])
+#                 if diff < min_diff:
+#                     min_diff = diff
+#                     best_pair = (all_redshifts[i], all_redshifts[j])
+
+#         if best_pair:
+#             # Check if the two nearest redshifts are within 5%
+#             relative_diff = abs(
+#                 best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
+#             avg_redshift = (best_pair[0] + best_pair[1]) / 2
+
+#             if relative_diff >= 0.05:
+#                 entry['properties']['redshift_conflict'] = True
+
+#             entry['determined_redshift'] = avg_redshift
+#             return avg_redshift
+#         else:
+#             # Fallback (should not happen if we have redshifts)
+#             entry['determined_redshift'] = all_redshifts[0]
+#             return all_redshifts[0]
+
+#     def update_catalog_item(self, id, catalog):
+#         """
+#         Update a catalog item with the given id and catalog data.
+
+#         Parameters
+#         ----------
+#         id : str
+#             The survey_id_subid of the spectrum to update.
+#         catalog : dict
+#             The catalog data to update the item with.
+#         """
+#         if id not in self.catalog:
+#             raise ValueError(f"Survey ID {id} not found in the catalog.")
+
+#         self.catalog[id].update(catalog)
+
+#     def sample_num(self):
+#         """
+#         Returns the number of samples in the catalog.
+
+#         Returns
+#         -------
+#         int
+#             The number of samples in the catalog.
+#         """
+#         count = 0
+#         for id, catalog in self.catalog.items():
+#             if catalog.get('Sample_Flag') is True: # 使用 .get() 更安全
+#                 count += 1
+#         return count
+
+#     def load_spectrum_filepaths_from_directory(self,directory_path, file_extension='.[sS][pP][eE][cC].[fF][iI][tT][sS]'):
+#         """
+#         Recursively finds files with a matching file extension in the specified directory.
+
+#         Args:
+#             directory_path (str or Path): The root directory path to search.
+#             file_extension (str): The file ending string to look for, e.g., 'spec.fits'.
+
+#         Returns:
+#             list[str]: A list of all found file path strings.
+#         """
+#         # Convert the input path to a Path object, which is standard practice for pathlib
+#         # and expand the tilde (~) to the user's home directory.
+#         p = Path(directory_path).expanduser()
+
+#         # Use rglob for a recursive search
+#         # p.rglob('*<file_extension>') will find all files ending with <file_extension> in all subdirectories
+#         filepaths = list(p.rglob(f'*{file_extension}'))
+
+#         # Convert the Path objects back to strings and return them
+#         return [str(fp) for fp in filepaths]
+
+
+#     def __repr__(self):
+#         """
+#         Returns a panda DataFrame representation of the catalog.
+#         """
+#         df = self.to_dataframe()
+#         if df.empty:
+#             return "Spectrum_Catalog is empty."
+#         else:
+#             return df.to_string(index=False, max_rows=10, max_colwidth=50, justify='left') + "\n\n" + f"Total objects: {len(self.catalog)}"
+
+
+import collections
+import re
+import tqdm
+import pandas as pd
+import numpy as np
+import os
+from pathlib import Path
+from copy import deepcopy
+
+import collections
+import re
+import tqdm
+import pandas as pd
+import numpy as np
+import os
+from pathlib import Path
+from copy import deepcopy
+
 class Spectrum_Catalog:
     def __init__(self):
-        self.catalog = collections.defaultdict(lambda: {
-            'survey_id': None,
+        # 初始化一个默认的字段集合
+        self.default_fields = {
+            'survey_id_subid': None,
             'prism_filepath': None,
             'prism_redshift': None,
             'determined_redshift': None,
@@ -1572,9 +2559,116 @@ class Spectrum_Catalog:
             'file_count': 0,
             'available_filters': set(),
             'properties': {}
-        })
+        }
+        # FIXED: Use a factory function that creates DEEP copies to avoid sharing mutable objects
+        self.catalog = collections.defaultdict(self._create_default_entry)
 
         self.filepath_pattern_re = r'^/([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^_]+)_([^_]+)_([a-zA-Z0-9_]+)\.spec.fits$'
+
+    def _create_default_entry(self):
+        """
+        Factory function to create a new default entry with deep copies of mutable objects.
+        This ensures each entry has its own independent dictionaries and sets.
+        """
+        return {
+            'survey_id_subid': None,
+            'prism_filepath': None,
+            'prism_redshift': None,
+            'determined_redshift': None,
+            'grating_filepaths': {},  # New empty dict for each entry
+            'grating_redshifts': {},  # New empty dict for each entry
+            'file_count': 0,
+            'available_filters': set(),  # New empty set for each entry
+            'properties': {}  # New empty dict for each entry
+        }
+
+    def add_property_field(self, field_name, default_value=None):
+        """
+        为所有 catalog 条目动态添加一个新的顶级字段。
+
+        Parameters
+        ----------
+        field_name : str
+            要添加的新字段的名称。
+        default_value : any, optional
+            新字段的默认值, by default None
+        """
+        if field_name not in self.default_fields:
+            # 更新默认字段模板，以便新创建的条目也包含这个字段
+            # FIXED: Use deepcopy for mutable default values
+            if isinstance(default_value, (dict, set, list)):
+                self.default_fields[field_name] = deepcopy(default_value)
+            else:
+                self.default_fields[field_name] = default_value
+
+            # 遍历所有现有条目，为它们添加这个新字段
+            for survey_id in self.catalog:
+                if field_name not in self.catalog[survey_id]:
+                    # FIXED: Use deepcopy for mutable values
+                    if isinstance(default_value, (dict, set, list)):
+                        self.catalog[survey_id][field_name] = deepcopy(default_value)
+                    else:
+                        self.catalog[survey_id][field_name] = default_value
+
+    def update_entry_property(self, survey_id_subid, property_name, value):
+        """
+        更新指定条目的一个顶级属性。
+
+        如果该属性不存在，它会根据需要被添加。
+
+        Parameters
+        ----------
+        survey_id_subid : str
+            要更新的条目的 ID。
+        property_name : str
+            要更新的属性的名称。
+        value : any
+            要设置的新值。
+        """
+        if survey_id_subid not in self.catalog:
+            raise KeyError(f"ID '{survey_id_subid}' 在 catalog 中未找到。")
+
+        # 检查这个字段是否是已知的字段，如果不是，则将其添加到所有条目中
+        if property_name not in self.default_fields:
+            self.add_property_field(property_name)
+
+        self.catalog[survey_id_subid][property_name] = value
+
+
+    def remove_property_field(self, field_name):
+        """
+        从所有 catalog 条目中动态删除一个顶级字段。
+
+        Parameters
+        ----------
+        field_name : str
+            要删除的字段的名称。
+        """
+        if field_name in self.default_fields:
+            del self.default_fields[field_name]
+
+        for survey_id in self.catalog:
+            if field_name in self.catalog[survey_id]:
+                del self.catalog[survey_id][field_name]
+
+    def remove_entry_property(self, survey_id_subid, property_name):
+        """
+        从指定的单个条目中删除一个顶级属性。
+
+        Parameters
+        ----------
+        survey_id_subid : str
+            要修改的条目的 ID。
+        property_name : str
+            要删除的属性的名称。
+        """
+        if survey_id_subid not in self.catalog:
+            raise KeyError(f"ID '{survey_id_subid}' 在 catalog 中未找到。")
+
+        if property_name not in self.catalog[survey_id_subid]:
+            raise KeyError(f"属性 '{property_name}' 在 ID '{survey_id_subid}' 中未找到。")
+
+        del self.catalog[survey_id_subid][property_name]
 
     def process_files(self, filepath_list, DJA_Catalog_DataFrame=None):
         """
@@ -1604,20 +2698,19 @@ class Spectrum_Catalog:
                 filter_name = re_group[5]
                 survey_id_subid = f"{survey_name}_{re_group[6]}"
 
+                # Access entry - this will create a new one if it doesn't exist
                 entry = self.catalog[survey_id_subid]
                 entry['survey_id'] = survey_name
-                entry['id'] = survey_id_subid
+                entry['survey_id_subid'] = survey_id_subid  # FIXED: Store the ID in the entry
                 entry['file_count'] += 1
                 entry['available_filters'].add(filter_name)
 
                 if filter_name == 'prism-clear':
                     entry['prism_filepath'] = filepath_str
-                    entry['prism_redshift'] = Load_Spectrum_Redshift(
-                        filepath_str, DJA_Catalog_DataFrame)
+                    entry['prism_redshift'] = Load_Spectrum_Redshift(filepath_str, DJA_Catalog_DataFrame)
                 else:
                     entry['grating_filepaths'][filter_name] = filepath_str
-                    entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(
-                        filepath_str, DJA_Catalog_DataFrame)
+                    entry['grating_redshifts'][filter_name] = Load_Spectrum_Redshift(filepath_str, DJA_Catalog_DataFrame)
 
     def load_spectrum_info(self, survey_id_subid):
         """
@@ -1633,7 +2726,10 @@ class Spectrum_Catalog:
         dict
             A dictionary containing the spectrum information, or None if not found.
         """
-        return dict(self.catalog.get(survey_id_subid, None))
+        result = self.catalog.get(survey_id_subid, None)
+        if result is not None:
+            return dict(result)
+        return None
 
     def load_spectrums_with_prism(self):
         """
@@ -1712,26 +2808,31 @@ class Spectrum_Catalog:
         pd.DataFrame
             A DataFrame containing the spectrum information with dictionaries and sets preserved.
         """
-        data = []
+        if not self.catalog:
+            return pd.DataFrame()
 
-        for survey_id_subid, entry in self.catalog.items():
-            row = {
-                'survey_id_subid': survey_id_subid,
-                'survey_id': entry['survey_id'],
-                'prism_filepath': entry['prism_filepath'],
-                'prism_redshift': entry['prism_redshift'],
-                # Keep as dict
-                'grating_filepaths': entry['grating_filepaths'],
-                # Keep as dict
-                'grating_redshifts': entry['grating_redshifts'],
-                'determined_redshift': entry['determined_redshift'],
-                'file_count': entry['file_count'],
-                'available_filters': entry['available_filters'],  # Keep as set
-                'properties': entry['properties']  # Keep as dict
-            }
-            data.append(row)
+        # FIXED: Create DataFrame from the dictionary
+        df = pd.DataFrame.from_dict(self.catalog, orient='index')
 
-        return pd.DataFrame(data)
+        # Reset index to make survey_id_subid a column
+        df.reset_index(inplace=True)
+        df.rename(columns={'index': 'survey_id_subid'}, inplace=True)
+
+        # Remove duplicate survey_id_subid column if it exists in the data
+        # (This can happen if entries have 'survey_id_subid' as a field)
+        if 'survey_id_subid' in df.columns:
+            # Count how many survey_id_subid columns exist
+            survey_id_cols = [col for col in df.columns if col == 'survey_id_subid']
+            if len(survey_id_cols) > 1:
+                # Keep only the first one (from index)
+                df = df.loc[:, ~df.columns.duplicated()]
+
+        # Ensure survey_id_subid is in the first column (only if it exists)
+        if 'survey_id_subid' in df.columns:
+            cols = ['survey_id_subid'] + [col for col in df.columns if col != 'survey_id_subid']
+            df = df[cols]
+
+        return df
 
     def save_catalog_to_pkl(self, filename):
         """
@@ -1766,48 +2867,50 @@ class Spectrum_Catalog:
 
         df = pd.read_pickle(pkl_filepath)
 
-        # Clear existing catalog
-        self.catalog = collections.defaultdict(lambda: {
-            'survey_id': None,
-            'prism_filepath': None,
-            'prism_redshift': None,
-            'grating_filepaths': {},
-            'grating_redshifts': {},
-            'file_count': 0,
-            'available_filters': set(),
-            'properties': {},
-            'determined_redshift': None
-        })
+        # FIXED: Handle both cases - when survey_id_subid is a column or index
+        # If survey_id_subid is in the index, reset it to a column
+        if df.index.name == 'survey_id_subid' or 'survey_id_subid' not in df.columns:
+            df.reset_index(inplace=True)
+            if 'index' in df.columns:
+                df.rename(columns={'index': 'survey_id_subid'}, inplace=True)
 
-        for _, row in df.iterrows():
-            survey_id_subid = row['survey_id_subid']
+        # 从 DataFrame 的列中推断出所有的字段
+        self.default_fields = {col: None for col in df.columns if col != 'survey_id_subid'}
+        # 确保一些字段是正确的类型（使用空实例而非共享引用）
+        self.default_fields['grating_filepaths'] = {}
+        self.default_fields['grating_redshifts'] = {}
+        self.default_fields['available_filters'] = set()
+        self.default_fields['properties'] = {}
 
-            # Basic information
-            entry = self.catalog[survey_id_subid]
-            entry['survey_id'] = row['survey_id']
-            entry['id'] = survey_id_subid
-            entry['prism_filepath'] = row['prism_filepath'] if pd.notna(
-                row['prism_filepath']) else None
-            entry['prism_redshift'] = row['prism_redshift'] * \
-                astropy.units.dimensionless_unscaled if pd.notna(
-                    row['prism_redshift']) else None
-            entry['file_count'] = int(row['file_count'])
-            entry['available_filters'] = set(filter for filter in row['available_filters']) if pd.notna(
-                row['available_filters']) else set()
-            entry['properties'] = row['properties'] if pd.notna(
-                row['properties']) else {}
-            entry['determined_redshift'] = row['determined_redshift'] if pd.notna(
-                row['determined_redshift']) else None
+        # Clear and rebuild catalog
+        self.catalog.clear()
 
-            # Handle grating_filepaths - keep as dict if already dict
-            if isinstance(row['available_filters'], set):
-                for filter_name in row['available_filters']:
-                    if filter_name == 'prism-clear':
-                        continue
-                    entry['grating_filepaths'][filter_name] = row['grating_filepaths'].get(
-                        filter_name, None)
-                    entry['grating_redshifts'][filter_name] = row['grating_redshifts'].get(
-                        filter_name, None)
+        # Set survey_id_subid as index for easier dictionary conversion
+        df.set_index('survey_id_subid', inplace=True)
+
+        # Convert to dictionary and ensure each entry has independent mutable objects
+        reconstructed_dict = df.to_dict(orient='index')
+
+        # Deep copy mutable objects to avoid sharing references
+        for survey_id, entry in reconstructed_dict.items():
+            # Remove survey_id_subid from entry if it exists (it's already the key)
+            if 'survey_id_subid' in entry:
+                del entry['survey_id_subid']
+
+            # Ensure mutable objects are independent copies
+            if 'grating_filepaths' in entry and isinstance(entry['grating_filepaths'], dict):
+                entry['grating_filepaths'] = dict(entry['grating_filepaths'])
+            if 'grating_redshifts' in entry and isinstance(entry['grating_redshifts'], dict):
+                entry['grating_redshifts'] = dict(entry['grating_redshifts'])
+            if 'available_filters' in entry:
+                if isinstance(entry['available_filters'], set):
+                    entry['available_filters'] = set(entry['available_filters'])
+                elif isinstance(entry['available_filters'], (list, tuple)):
+                    entry['available_filters'] = set(entry['available_filters'])
+            if 'properties' in entry and isinstance(entry['properties'], dict):
+                entry['properties'] = dict(entry['properties'])
+
+            self.catalog[survey_id] = entry
 
     def find_complete_objects(self, required_filters=None):
         """
@@ -1835,17 +2938,30 @@ class Spectrum_Catalog:
 
         return complete_objects
 
-    def catalog_iterator(self):
+    def catalog_iterator(self, sample_num=None):
         """
         Returns an iterator over the catalog entries.
+
+        Parameters
+        ----------
+        sample_num : int, optional
+            If provided, only iterate over the first sample_num entries.
 
         Yields
         -------
         tuple
             A tuple containing the survey_id_subid and the corresponding catalog entry.
         """
-        for index in self.catalog.keys():
-            yield index, self.catalog[index]
+        if sample_num is not None:
+            count = 0
+            for survey_id_subid, entry in self.catalog.items():
+                yield survey_id_subid, entry
+                count += 1
+                if count >= sample_num:
+                    break
+        else:
+            for survey_id_subid, entry in self.catalog.items():
+                yield survey_id_subid, entry
 
     def determine_redshift(self, survey_id_subid):
         """
@@ -1868,6 +2984,11 @@ class Spectrum_Catalog:
                 f"Survey ID {survey_id_subid} not found in the catalog.")
 
         entry = self.catalog[survey_id_subid]
+
+        # FIXED: Initialize properties dict if it doesn't exist
+        if 'properties' not in entry or entry['properties'] is None:
+            entry['properties'] = {}
+
         entry['properties']['redshift_conflict'] = False
 
         prism_redshift = entry['prism_redshift']
@@ -1890,9 +3011,8 @@ class Spectrum_Catalog:
 
         # One prism and one grating redshift
         if prism_redshift is not None and len(grating_redshifts) == 1:
-            if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.05:
-                entry['determined_redshift'] = (
-                    prism_redshift + grating_redshifts[0]) / 2
+            if abs(prism_redshift - grating_redshifts[0]) / prism_redshift < 0.1:
+                entry['determined_redshift'] = grating_redshifts[0]
                 return entry['determined_redshift']
             else:
                 entry['determined_redshift'] = prism_redshift
@@ -1921,7 +3041,7 @@ class Spectrum_Catalog:
                 best_pair[0] - best_pair[1]) / min(best_pair[0], best_pair[1])
             avg_redshift = (best_pair[0] + best_pair[1]) / 2
 
-            if relative_diff >= 0.05:
+            if relative_diff >= 0.1:
                 entry['properties']['redshift_conflict'] = True
 
             entry['determined_redshift'] = avg_redshift
@@ -1958,20 +3078,41 @@ class Spectrum_Catalog:
         """
         count = 0
         for id, catalog in self.catalog.items():
-            if catalog['properties']['Sample_Flag'] is True:
+            if catalog.get('sample_flag') is True:
                 count += 1
         return count
 
+    def load_spectrum_filepaths_from_directory(self, directory_path, file_extension='.[sS][pP][eE][cC].[fF][iI][tT][sS]'):
+        """
+        Recursively finds files with a matching file extension in the specified directory.
+
+        Args:
+            directory_path (str or Path): The root directory path to search.
+            file_extension (str): The file ending string to look for, e.g., 'spec.fits'.
+
+        Returns:
+            list[str]: A list of all found file path strings.
+        """
+        p = Path(directory_path).expanduser()
+        filepaths = list(p.rglob(f'*{file_extension}'))
+        return [str(fp) for fp in filepaths]
+
     def __repr__(self):
         """
-        Returns a panda DataFrame representation of the catalog.
+        Returns a concise summary of the catalog's contents.
         """
-        df = self.to_dataframe()
-        if df.empty:
-            return "Spectrum_Catalog is empty."
-        else:
-            return df.to_string(index=False, max_rows=10, max_colwidth=50, justify='left') + "\n\n" + f"Total objects: {len(self.catalog)}"
+        if not self.catalog:
+            return "<Spectrum_Catalog (empty)>"
 
+        stats = self.get_summary_stats()
+        return (
+            f"<Spectrum_Catalog with {stats['total_objects']} objects>\n"
+            f"  Total spectra: {stats['total_spectra']}\n"
+            f"  - Prism: {stats['total_prism_spectra']}\n"
+            f"  - Grating: {stats['total_grating_spectra']}\n"
+            f"  Objects with prism: {stats['with_prism']}\n"
+            f"  Objects with grating: {stats['with_grating']}"
+        )
 
 
 def estimate_snr_error(spectrum_1d,fitter_fit_result, line_center_wavelength,continuum_width=150*astropy.units.AA, measureLengthInFWHM=3, n_random_samples=1000, plot_diagnostics=False):
@@ -2112,3 +3253,468 @@ def calculate_err_at_given_wavelength(Spectrum_1d, RestFrameWavelength):
 def BalmerDecrementUncertainty(alphaValve, alphaError, betaValve, betaError):
     err_ratio=alphaError**2/betaValve**2 + betaError**2*alphaValve**2/betaValve**4
     return np.sqrt(err_ratio)
+
+
+class SpectrumAverager:
+    def __init__(self):
+        """
+        Initialize the SpectrumAverager class.
+        """
+        self.spectra_data=[]
+        self.common_wavelength=None
+        self.interpolated_fluxes=[]
+        self.average_flux=None
+        self.average_flux_err=None
+        self.normalization_factors=[]
+        self.normalized_fluxes=None
+
+    def load_spectrum_catalog(self, catalog_entry_key_list,Catalog):
+        """
+        Load spectra from a list of catalog entries.
+
+        Parameters:
+        catalog_entry_key_list (list): List of catalog entries containing spectra.
+        """
+        spectra_data_len=len(self.spectra_data)
+        successful_loads=0
+
+        for i,entry_key in enumerate(catalog_entry_key_list):
+            try:
+                entry=Catalog.catalog[entry_key]
+                if not entry.get('prism_filepath', None):
+                    print(f"Entry {entry_key} does not have prism_filepath attribute. Skipping.")
+                    continue
+
+                prism_spectrum=Load_Spectrum_From_Fits(entry['prism_filepath'], entry['prism_redshift'])
+
+                # prism_spectrum.set_boundarys(1250*u.AA, 8000*u.AA)
+
+
+                if len(prism_spectrum.processing_wavelengths.data)==0 or len(prism_spectrum.processing_flux_lambda.data)==0:
+                    print(f"Entry {entry_key} has empty wavelength or flux data. Skipping.")
+                    continue
+
+                if len(prism_spectrum.processing_wavelengths.data)!=len(prism_spectrum.processing_flux_lambda.data):
+                    print(f"Entry {entry_key} has mismatched wavelength and flux lengths. Skipping.")
+                    continue
+
+                mask=~(np.isnan(prism_spectrum.processing_wavelengths.data) | np.isnan(prism_spectrum.processing_flux_lambda.data)|(prism_spectrum.processing_wavelengths.data==0)|(prism_spectrum.processing_flux_lambda.data<=0))
+                if np.sum(mask)<2:
+                    print(f"Entry {entry_key} has insufficient valid data points. Skipping.")
+                    continue
+
+                self.spectra_data.append({
+                    'index':spectra_data_len+i,
+                    'spectrum1d':prism_spectrum,
+                    'wavelengths':prism_spectrum.processing_wavelengths.data[mask],
+                    'fluxes':prism_spectrum.processing_flux_lambda.data[mask]
+                })
+                successful_loads+=1
+
+            except Exception as e:
+                print(f"Failed to load spectrum for entry {entry_key}: {e}")
+                continue
+
+        return successful_loads > 0
+
+
+    def create_common_wavelength_grid(self, num_points=None, wavelength_range=None):
+        """
+        Create a common wavelength grid for averaging.
+
+        Parameters:
+        -------
+        num_points: int, optional
+            Number of points in the common wavelength grid. If None, it will be determined based on the overlapping wavelength range.
+        wavelength_range: tuple, optional
+            Tuple specifying the (min, max) wavelength range, if None then automatically use the overlapping range of all spectra.
+        """
+
+        if not self.spectra_data:
+            raise ValueError("No spectra data loaded. Please load spectra before creating a common wavelength grid.")
+
+        all_min_wavelengths = [spectrum_data['wavelengths'].min() for spectrum_data in self.spectra_data]
+        all_max_wavelengths = [spectrum_data['wavelengths'].max() for spectrum_data in self.spectra_data]
+
+        if wavelength_range is None:
+            common_min_wavelength = max(all_min_wavelengths)
+            common_max_wavelength = min(all_max_wavelengths)
+        else:
+            common_min_wavelength, common_max_wavelength = wavelength_range
+
+        if common_min_wavelength >= common_max_wavelength:
+            raise ValueError("No overlapping wavelength range found among the spectra.")
+
+        if num_points is None:
+            spectrum_data_points=[]
+            for spec in self.spectra_data:
+                mask=(spec['wavelengths']>=common_min_wavelength) & (spec['wavelengths']<=common_max_wavelength)
+                valid_datapoints=np.sum(mask)
+                if valid_datapoints>1:
+                    spectrum_data_points.append(valid_datapoints)
+
+            if spectrum_data_points:
+                num_points=max(1000,int(max(spectrum_data_points)))
+            else:
+                num_points=1000
+
+        self.common_wavelength = np.linspace(common_min_wavelength, common_max_wavelength, num_points)
+
+        return self.common_wavelength
+
+    def interpolate_spectra(self, interpolation_method='linear'):
+        """
+        Interpolate all loaded spectra onto the common wavelength grid.
+
+        Parameters:
+        ------
+        interpolation_method: str, optional
+            Interpolation method to use. Default is 'linear', can also be 'nearest', 'cubic' and 'quadratic'.
+        """
+
+        if self.common_wavelength is None:
+            self.create_common_wavelength_grid()
+
+        self.interpolated_fluxes = []
+        successful_interpolations=0
+
+        for spectrum_packed_data in self.spectra_data:
+            try:
+                wavelength_data = spectrum_packed_data['wavelengths']
+                flux_data = spectrum_packed_data['fluxes']
+
+                mask=(wavelength_data>=self.common_wavelength.min()) & (wavelength_data<=self.common_wavelength.max())
+
+                if np.sum(mask)<2:
+                    print(f"Spectrum index {spectrum_packed_data['index']} has insufficient data in the common wavelength range. Skipping.")
+                    continue
+
+                wavelength_data_valid = wavelength_data[mask]
+                flux_data_valid = flux_data[mask]
+
+                interpolation_function = scipy.interpolate.interp1d(wavelength_data_valid, flux_data_valid, kind=interpolation_method,bounds_error=False, fill_value=np.nan)
+
+                interpolated_flux = interpolation_function(self.common_wavelength)
+
+                if np.all(np.isnan(interpolated_flux)):
+                    print(f"Spectrum index {spectrum_packed_data['index']} interpolation resulted in all NaN values. Skipping.")
+                    continue
+
+                self.interpolated_fluxes.append(interpolated_flux)
+                successful_interpolations+=1
+
+            except Exception as e:
+                print(f"Failed to interpolate spectrum index {spectrum_packed_data['index']}: {e}")
+                continue
+
+        return successful_interpolations > 0
+
+
+    def spectrum_normalization(self, reference_wavelength=5500.0, target_flux=1e-19):
+        """
+        Normalize the interpolated spectra at a reference wavelength.
+
+        Parameters:
+        ----------
+        reference_wavelength: float
+            Wavelength at which to normalize the spectra. Default is 5500.0 Angstroms in V-band.
+        target_flux: float
+            Target flux value for normalization. Default is 1e-19 erg/s/cm^2/Angstrom.
+        """
+
+        if not self.interpolated_fluxes:
+            raise ValueError("No interpolated spectra available. Please interpolate spectra before normalization.")
+
+        if reference_wavelength < self.common_wavelength.min() or reference_wavelength > self.common_wavelength.max():
+            raise ValueError(f"Reference wavelength {reference_wavelength} is out of the common wavelength range [{self.common_wavelength.min()}, {self.common_wavelength.max()}].")
+
+        ref_index=np.argmin(np.abs(self.common_wavelength - reference_wavelength))
+        actual_ref_wavelength=self.common_wavelength[ref_index]
+
+        self.normalization_factors = []
+        self.normalized_fluxes = []
+        successful_normalizations=0
+
+        for i,interpolated_flux in enumerate(self.interpolated_fluxes):
+            try:
+                flux_at_ref = interpolated_flux[ref_index]
+
+                if np.isnan(flux_at_ref) or flux_at_ref == 0:
+                    print(f"Spectrum index {i} has invalid flux at reference wavelength {actual_ref_wavelength}. Skipping.")
+                    continue
+
+                normalization_factor = target_flux / flux_at_ref
+                normalized_flux = interpolated_flux * normalization_factor
+
+                self.normalization_factors.append(normalization_factor)
+                self.normalized_fluxes.append(normalized_flux)
+                successful_normalizations+=1
+
+            except Exception as e:
+                print(f"Failed to normalize spectrum index {i}: {e}")
+                continue
+
+        if self.normalized_fluxes:
+            self.normalized_fluxes = np.array(self.normalized_fluxes).copy()
+
+        return successful_normalizations > 0
+
+    def compute_average_spectrum(self, method='mean',ignore_nan=True, use_percentile_filter=False, lower_percentile=16, upper_percentile=84):
+        """
+        Compute the average spectrum from the normalized spectra on the common wavelength grid.
+
+        Parameters:
+        ------
+        method: str
+            Method to compute the average spectrum. Options are 'mean' or 'median'. Default is 'mean'.
+        ignore_nan: bool
+            Whether to ignore NaN values in the computation. Default is True.
+        use_percentile_filter: bool
+            Whether to use percentile filtering to exclude outliers. Default is False.
+        lower_percentile: float
+            If use_percentile_filter is True, the lower percentile to exclude. Default is 16.
+        upper_percentile: float
+            If use_percentile_filter is True, the upper percentile to exclude. Default is 84.
+        """
+
+        if not hasattr(self, 'normalized_fluxes') or self.normalized_fluxes is None:
+            raise ValueError("No normalized spectra available. Please normalize spectra before computing the average.")
+
+        flux_matrix=np.array(self.normalized_fluxes)
+
+        if use_percentile_filter:
+            self.average_flux, self.average_flux_err = self._compute_percentile_filtered_average(
+                flux_matrix, method, lower_percentile, upper_percentile, ignore_nan)
+
+        else:
+            if ignore_nan:
+                if method=='mean':
+                    self.average_flux = np.nanmean(flux_matrix, axis=0)
+                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0, nan_policy='omit')
+                elif method=='median':
+                    self.average_flux = np.nanmedian(flux_matrix, axis=0)
+                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0, nan_policy='omit')
+                else:
+                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
+
+            else:
+                if method=='mean':
+                    self.average_flux = np.mean(flux_matrix, axis=0)
+                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0)
+                elif method=='median':
+                    self.average_flux = np.median(flux_matrix, axis=0)
+                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0)
+                else:
+                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
+
+        valid_counts=np.sum(~np.isnan(flux_matrix), axis=0) if ignore_nan else flux_matrix.shape[0]
+
+        return self.common_wavelength, self.average_flux, self.average_flux_err, valid_counts
+
+    def _compute_percentile_filtered_average(self, flux_matrix, method, lower_percentile, upper_percentile, ignore_nan):
+        """
+        Helper function to compute average spectrum with percentile filtering.
+
+        Parameters:
+        ----------
+        flux_matrix: np.ndarray
+            2D array of shape (num_spectra, num_wavelengths) containing normalized fluxes.
+        method: str
+            Method to compute the average spectrum. Options are 'mean' or 'median'.
+        lower_percentile: float
+            Lower percentile to exclude.
+        upper_percentile: float
+            Upper percentile to exclude.
+        ignore_nan: bool
+            Whether to ignore NaN values in the computation.
+
+        Returns:
+        -------
+        average_flux: np.ndarray
+            1D array of average flux values.
+        average_flux_err: np.ndarray
+            1D array of standard error of the mean for the average flux.
+
+        """
+        num_wavelengths = flux_matrix.shape[1]
+        average_flux = np.empty(num_wavelengths)
+        average_flux_err = np.empty(num_wavelengths)
+
+        total_used_points=0
+        total_original_points=0
+
+        for index in range(num_wavelengths):
+            wavelength_fluxes = flux_matrix[:, index]
+
+            if ignore_nan:
+                valid_fluxes = wavelength_fluxes[~np.isnan(wavelength_fluxes)]
+            else:
+                valid_fluxes = wavelength_fluxes
+
+            total_original_points+=len(valid_fluxes)
+
+            if len(valid_fluxes) == 0:
+                average_flux[index] = np.nan
+                average_flux_err[index] = np.nan
+                continue
+
+            try:
+                lower_bound = np.percentile(valid_fluxes, lower_percentile)
+                upper_bound = np.percentile(valid_fluxes, upper_percentile)
+
+                filtered_fluxes = valid_fluxes[(valid_fluxes >= lower_bound) & (valid_fluxes <= upper_bound)]
+
+                if len(filtered_fluxes) == 0:
+                    filtered_fluxes = valid_fluxes
+
+                total_used_points+=len(filtered_fluxes)
+
+                if method == 'mean':
+                    average_flux[index] = np.mean(filtered_fluxes)
+                    average_flux_err[index] = scipy.stats.sem(filtered_fluxes)
+                elif method == 'median':
+                    average_flux[index] = np.median(filtered_fluxes)
+                    average_flux_err[index] = scipy.stats.sem(filtered_fluxes)
+                else:
+                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
+
+            except Exception as e:
+                continue
+
+
+        return average_flux, average_flux_err
+
+    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0):
+        """
+        Plot the average spectrum along with individual normalized spectra.
+
+        Parameters:
+        ----------
+        show_individual: bool
+            Whether to plot individual normalized spectra. Default is True.
+        show_average: bool
+            Whether to plot the average spectrum. Default is True.
+        show_error: bool
+            Whether to plot error bars for the average spectrum. Default is True.
+        figsize: tuple
+            Figure size for the plot. Default is (25, 14).
+        alpha: float
+            Transparency level for individual spectra. Default is 0.3.
+        show_normalization_point: bool
+            Whether to highlight the normalization point. Default is True.
+        reference_wavelength: float
+            Wavelength used for normalization. Default is 5500.0 Angstroms.
+        """
+
+        fig, ax= plt.subplots(figsize=figsize)
+        if show_individual and self.normalized_fluxes is not None:
+            for normalized_flux in self.normalized_fluxes:
+                ax.plot(self.common_wavelength, normalized_flux, color='gray', alpha=alpha, label='Individual Normalized Spectra' if 'Individual Normalized Spectra' not in ax.get_legend_handles_labels()[1] else "")
+        if show_average and self.average_flux is not None:
+            ax.plot(self.common_wavelength, self.average_flux, color='k',linewidth=2, label='Average Spectrum')
+            if show_error and self.average_flux_err is not None:
+                ax.fill_between(self.common_wavelength, self.average_flux - self.average_flux_err, self.average_flux + self.average_flux_err, color='k', alpha=0.2, label='±1σ Error')
+
+
+        if show_normalization_point and self.normalized_fluxes is not None:
+            ref_index=np.argmin(np.abs(self.common_wavelength - reference_wavelength))
+            actual_ref_wavelength=self.common_wavelength[ref_index]
+            avg_flux_at_ref=self.average_flux[ref_index] if self.average_flux is not None else None
+            if avg_flux_at_ref is not None:
+                ax.scatter([actual_ref_wavelength], [avg_flux_at_ref], color='red', s=100, zorder=5, label='Normalization Point')
+
+        ax.set_xlabel('Wavelength (Angstrom)', fontsize=24)
+        ax.set_ylabel('Normalized Flux (erg/s/cm²/Angstrom)', fontsize=24)
+        ax.set_title('Average Spectrum with Individual Normalized Spectra', fontsize=28)
+        ax.set_ylim(0,np.nanmax(self.average_flux)*1.2 if self.average_flux is not None else None)
+
+
+
+        ax.spines['bottom'].set_linewidth(2)
+        ax.spines['top'].set_linewidth(2)
+        ax.spines['left'].set_linewidth(2)
+        ax.spines['right'].set_linewidth(2)
+        ax.spines['bottom'].set_color('black')
+        ax.spines['top'].set_color('black')
+        ax.spines['left'].set_color('black')
+        ax.spines['right'].set_color('black')
+        ax.yaxis.set_ticks_position('both')
+        ax.xaxis.set_ticks_position('both')
+        ax.xaxis.set_tick_params(width=2, direction='in', which='both', labelsize=18)
+        ax.yaxis.set_tick_params(width=2, direction='in', which='both', labelsize=18)
+        ax.xaxis.set_tick_params(length=6, which='major')
+        ax.xaxis.set_tick_params(length=3, which='minor')
+        ax.yaxis.set_tick_params(length=6, which='major')
+        ax.yaxis.set_tick_params(length=3, which='minor')
+        ax.legend(fontsize=20, loc='best')
+
+        plt.show()
+
+    def get_normalization_factors(self):
+        """
+        Get the normalization factors used for each spectrum.
+
+        Returns:
+        -------
+        normalization_dict: dict
+            Dictionary mapping spectrum indices to their normalization factors.
+        """
+        return {'normalization_factors': self.normalization_factors.copy() if self.normalization_factors else None,
+                'num_normalized_spectra': len(self.normalization_factors) if self.normalization_factors else 0,
+                'factor_mean': np.mean(self.normalization_factors) if self.normalization_factors else None,
+                'factor_std': np.std(self.normalization_factors) if self.normalization_factors else None
+                }
+
+    def get_average_spectrum_data(self):
+        """
+        Get the computed average spectrum data.
+
+        Returns:
+        -------
+        average_spectrum_dict: dict
+            Dictionary containing common wavelengths, average flux, and average flux error.
+        """
+        return {'common_wavelength': self.common_wavelength.copy() if self.common_wavelength is not None else None,
+                'average_flux': self.average_flux.copy() if self.average_flux is not None else None,
+                'average_flux_err': self.average_flux_err.copy() if self.average_flux_err is not None else None,
+                'normalization_info': self.get_normalization_factors()
+                }
+
+    def save_average_spectrum_to_file(self, filepath):
+        """
+        Save the average spectrum data to a file.
+
+        Parameters:
+        ----------
+        filepath: str
+            Path to the file where the average spectrum data will be saved.
+        """
+
+        if self.average_flux is None or self.common_wavelength is None:
+            raise ValueError("Average spectrum data is not available. Please compute the average spectrum before saving.")
+
+        data_to_save = {
+            'common_wavelength': self.common_wavelength,
+            'average_flux': self.average_flux,
+            'average_flux_err': self.average_flux_err
+        }
+        np.savez(filepath, **data_to_save)
+
+    def load_average_spectrum_from_file(self, filepath):
+        """
+        Load the average spectrum data from a file saved via save_average_spectrum_to_file.
+
+        Args:
+            filepath (str): Path to the file from which the average spectrum data will be loaded.
+        """
+
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"The file {filepath} does not exist.")
+
+        loaded_data = np.load(filepath)
+
+        self.common_wavelength = loaded_data['common_wavelength']
+        self.average_flux = loaded_data['average_flux']
+        self.average_flux_err = loaded_data['average_flux_err']
+
+        return True
