@@ -70,18 +70,18 @@ def main():
 
     DJAv4Catalog = FL.Spectrum_Catalog()
     DJAv4Catalog.load_from_pkl(os.path.expanduser(
-    './DJAv4Catalog.pkl'))
+    './DJAV4.2Catalog.pkl'))
     print(DJAv4Catalog.sample_num())
 
-    File_Path_str = os.path.expanduser('~/DJAv4')
+    File_Path_str = os.path.expanduser('~/DJAv4.2Min')
     DJA_Root_Url_str = "https://s3.amazonaws.com/msaexp-nirspec/extractions"
     os.makedirs(File_Path_str, exist_ok=True)
-    DJA_v4_Catalog_Path_str = './DJAv4Catalog.csv'
+    DJA_v4_Catalog_Path_str = './DJAv4.2Catalog.csv'
     DJA_v4_Catalog_DataFrame = pd.read_csv(DJA_v4_Catalog_Path_str)
 
     download_data_list=list()
     for id, catalog in DJAv4Catalog.catalog_iterator():
-        if not catalog['properties']['Sample_Flag']:
+        if not catalog['sample_flag']:
             continue
 
         prism_file_name=catalog['prism_filepath'].split('/')[-1]
@@ -92,7 +92,6 @@ def main():
             download_data_list.append((grating_file_name))
 
     target_files_list=np.array(download_data_list)
-
 
     # 根据文件名列表筛选目录 DataFrame
     filtered_catalog_df = DJA_v4_Catalog_DataFrame[

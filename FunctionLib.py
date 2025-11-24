@@ -3584,7 +3584,7 @@ class SpectrumAverager:
 
         return average_flux, average_flux_err
 
-    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0):
+    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0, ylim=None):
         """
         Plot the average spectrum along with individual normalized spectra.
 
@@ -3604,6 +3604,8 @@ class SpectrumAverager:
             Whether to highlight the normalization point. Default is True.
         reference_wavelength: float
             Wavelength used for normalization. Default is 5500.0 Angstroms.
+        ylim: tuple or None
+            Y-axis limits for the plot. If None, it will be set automatically.
         """
 
         fig, ax= plt.subplots(figsize=figsize)
@@ -3626,7 +3628,10 @@ class SpectrumAverager:
         ax.set_xlabel('Wavelength (Angstrom)', fontsize=24)
         ax.set_ylabel('Normalized Flux (erg/s/cm²/Angstrom)', fontsize=24)
         ax.set_title('Average Spectrum with Individual Normalized Spectra', fontsize=28)
-        ax.set_ylim(0,np.nanmax(self.average_flux)*1.2 if self.average_flux is not None else None)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        else:
+            ax.set_ylim(0,np.nanmax(self.average_flux)*1.2 if self.average_flux is not None else None)
 
 
 
