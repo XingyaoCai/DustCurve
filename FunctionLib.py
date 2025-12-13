@@ -3298,7 +3298,7 @@ class SpectrumAverager:
                     print(f"Entry {entry_key} has mismatched wavelength and flux lengths. Skipping.")
                     continue
 
-                mask=~(np.isnan(prism_spectrum.processing_wavelengths.data) | np.isnan(prism_spectrum.processing_flux_lambda.data)|(prism_spectrum.processing_wavelengths.data==0)|(prism_spectrum.processing_flux_lambda.data<=0))
+                mask=~(np.isnan(prism_spectrum.processing_wavelengths.data) | np.isnan(prism_spectrum.processing_flux_lambda.data)|(prism_spectrum.processing_wavelengths.data==0))
                 if np.sum(mask)<2:
                     print(f"Entry {entry_key} has insufficient valid data points. Skipping.")
                     continue
@@ -3318,16 +3318,16 @@ class SpectrumAverager:
         return successful_loads > 0
 
 
-    def create_common_wavelength_grid(self, num_points=None, wavelength_range=None):
+    def create_common_wavelength_grid(self, wavelength_range=None, grid_size=None):
         """
         Create a common wavelength grid for averaging.
 
         Parameters:
         -------
-        num_points: int, optional
-            Number of points in the common wavelength grid. If None, it will be determined based on the overlapping wavelength range.
         wavelength_range: tuple, optional
             Tuple specifying the (min, max) wavelength range, if None then automatically use the overlapping range of all spectra.
+        grid_size: float, optional
+            Desired wavelength grid size in Angstroms. If None, it will be determined based on the maximum number of data points among the spectra.
         """
 
         if not self.spectra_data:
@@ -3345,7 +3345,7 @@ class SpectrumAverager:
         if common_min_wavelength >= common_max_wavelength:
             raise ValueError("No overlapping wavelength range found among the spectra.")
 
-        if num_points is None:
+        if grid_size is None:
             spectrum_data_points=[]
             for spec in self.spectra_data:
                 mask=(spec['wavelengths']>=common_min_wavelength) & (spec['wavelengths']<=common_max_wavelength)
@@ -3354,9 +3354,12 @@ class SpectrumAverager:
                     spectrum_data_points.append(valid_datapoints)
 
             if spectrum_data_points:
-                num_points=max(1000,int(max(spectrum_data_points)))
+                max_data_points = max(spectrum_data_points)
+                num_points = max_data_points
             else:
                 num_points=1000
+        else:
+            num_points = int((common_max_wavelength - common_min_wavelength) / grid_size) + 1
 
         self.common_wavelength = np.linspace(common_min_wavelength, common_max_wavelength, num_points)
 
@@ -3458,6 +3461,26 @@ class SpectrumAverager:
             self.normalized_fluxes = np.array(self.normalized_fluxes).copy()
 
         return successful_normalizations > 0
+
+    def spectrum_normalization_within_range(self, wavelength_range=(5000.0, 6000.0), target_flux=None):
+        """
+        Normalize the interpolated spectra within a specified wavelength range.
+
+        Parameters:
+        ----------
+        wavelength_range: tuple
+            Wavelength range (min, max) within which to normalize the spectra.
+        target_flux: float, optional
+            Target flux value for normalization. If None, use the median flux within the range.
+        """
+
+        if not self.interpolated_fluxes:
+            raise ValueError("No interpolated spectra available. Please interpolate spectra before normalization.")
+
+        min_wavelength, max_wavelength = wavelength_range
+
+        if min_wavelength < self.common_wavelength.min():
+            pass
 
     def compute_average_spectrum(self, method='mean',ignore_nan=True, use_percentile_filter=False, lower_percentile=16, upper_percentile=84):
         """
@@ -3584,7 +3607,7 @@ class SpectrumAverager:
 
         return average_flux, average_flux_err
 
-    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0, ylim=None):
+    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0, ylim=None,if_show=True):
         """
         Plot the average spectrum along with individual normalized spectra.
 
@@ -3652,8 +3675,9 @@ class SpectrumAverager:
         ax.yaxis.set_tick_params(length=6, which='major')
         ax.yaxis.set_tick_params(length=3, which='minor')
         ax.legend(fontsize=20, loc='best')
-
-        plt.show()
+        if if_show:
+            plt.show()
+        return fig, ax
 
     def get_normalization_factors(self):
         """
