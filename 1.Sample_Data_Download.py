@@ -73,7 +73,7 @@ def main():
     './DJAV4.2Catalog.pkl'))
     print(DJAv4Catalog.sample_num())
 
-    File_Path_str = os.path.expanduser('~/DJAv4.2Min')
+    File_Path_str = os.path.expanduser('~/DJAv4.2Mini')
     DJA_Root_Url_str = "https://s3.amazonaws.com/msaexp-nirspec/extractions"
     os.makedirs(File_Path_str, exist_ok=True)
     DJA_v4_Catalog_Path_str = './DJAv4.2Catalog.csv'

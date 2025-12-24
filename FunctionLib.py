@@ -13,6 +13,9 @@ import pandas as pd
 import scipy
 import tqdm
 
+import warnings
+import copy
+
 from pathlib import Path # Standard and correct way to import
 
 
@@ -3477,10 +3480,45 @@ class SpectrumAverager:
         if not self.interpolated_fluxes:
             raise ValueError("No interpolated spectra available. Please interpolate spectra before normalization.")
 
-        min_wavelength, max_wavelength = wavelength_range
+        target_region = wavelength_range
 
-        if min_wavelength < self.common_wavelength.min():
-            pass
+        flux_densities_in_region = []
+        for interpolated_flux in self.interpolated_fluxes:
+            wavelength=self.common_wavelength
+            flux_lambda=interpolated_flux
+
+            flux_density_in_region = flux_density(wavelength, flux_lambda, target_region)
+
+            if np.isnan(flux_density_in_region):
+                flux_densities_in_region.append(np.nan)
+
+            else:
+                flux_densities_in_region.append(flux_density_in_region)
+
+        flux_densities_in_region = np.array(flux_densities_in_region)
+
+        normalization_value=np.nanmedian(flux_densities_in_region) if target_flux is None else target_flux
+        normalization_factors = normalization_value / flux_densities_in_region
+        self.normalization_factors = normalization_factors
+        self.normalized_fluxes = []
+        for i,interpolated_flux in enumerate(self.interpolated_fluxes):
+            try:
+                normalization_factor = normalization_factors[i]
+                if np.isnan(normalization_factor):
+                    print(f"Spectrum index {i} has invalid normalization factor. Skipping.")
+                    continue
+
+                normalized_flux = interpolated_flux * normalization_factor
+
+                self.normalized_fluxes.append(normalized_flux)
+
+            except Exception as e:
+                print(f"Failed to normalize spectrum index {i}: {e}")
+                continue
+
+        if self.normalized_fluxes:
+            self.normalized_fluxes = np.array(self.normalized_fluxes).copy()
+        return True
 
     def compute_average_spectrum(self, method='mean',ignore_nan=True, use_percentile_filter=False, lower_percentile=16, upper_percentile=84):
         """
@@ -3747,3 +3785,195 @@ class SpectrumAverager:
         self.average_flux_err = loaded_data['average_flux_err']
 
         return True
+
+
+
+
+class CalzettiCorrector:
+
+    """
+    A class to apply the Calzetti et al. (2000) dust attenuation law to a spectrum_1d.
+
+    """
+
+    def __init__(self, Rv=4.05):
+        """
+        Initialize the CalzettiCorrector with a specified Rv value.
+
+        Parameters
+        ----------
+        Rv : float, optional
+            The total-to-selective extinction ratio. Default is 4.05.
+        """
+        self.Rv = Rv
+
+    def _get_k_lambda(self, wavelength_micron):
+        """
+        Calculate the attenuation curve k(λ) based on the Calzetti et al. (2000) law.
+
+        Parameters
+        ----------
+        wavelength_micron : array-like
+            Wavelengths in Angstroms.
+
+        Returns
+        -------
+        k_lambda : array-like
+            The attenuation curve values at the given wavelengths.
+        """
+        k_lambda = np.zeros_like(wavelength_micron)
+        if isinstance(wavelength_micron, (int, float)):
+            wavelength_micron = np.array([wavelength_micron])
+
+        if isinstance(wavelength_micron, astropy.units.Quantity):
+            if not wavelength_micron.unit.is_equivalent(astropy.units.micron):
+                raise ValueError("Input wavelength must have units of microns.")
+            wavelength_micron = (wavelength_micron.to(astropy.units.micron)).value
+
+        # Apply the Calzetti law piecewise
+        mask1 = (wavelength_micron >= 0.12) & (wavelength_micron < 0.63)
+
+        if np.any(mask1):
+            x=1./wavelength_micron[mask1]
+            k_lambda[mask1] = (2.659 * (-2.156 + 1.509 * x - 0.198 * (x**2) + 0.011 * (x**3)) + self.Rv)
+
+        mask2 = (wavelength_micron >= 0.63) & (wavelength_micron <= 2.2)
+        if np.any(mask2):
+            x=1. / wavelength_micron[mask2]
+            k_lambda[mask2] = (2.659 * (-1.857 + 1.040 * x) + self.Rv)
+            print(x)
+
+        mask_out=(~mask1) & (~mask2)
+        if np.any(mask_out):
+            k_lambda[mask_out] = np.nan
+
+        return k_lambda
+
+
+
+    def calculate_EBV_stars(self, ebv_gas=None, Halpha_flux=None, Hbeta_flux=None):
+        """
+        Calculate the stellar color excess E(B-V)_stars from the gas color excess E(B-V)_gas.
+
+        Parameters
+        ----------
+        ebv_gas : float, optional
+            The gas color excess E(B-V)_gas.
+        Halpha_flux : float, optional
+            The flux of the Hα emission line.
+        Hbeta_flux : float, optional
+            The flux of the Hβ emission line.
+
+        Returns
+        -------
+        ebv_stars : float
+            The stellar color excess E(B-V)_stars.
+        """
+        if ebv_gas is not None:
+            return 0.44 * ebv_gas
+
+        elif Halpha_flux is not None and Hbeta_flux is not None:
+
+            F_Ha=Halpha_flux.value if isinstance(Halpha_flux, astropy.units.Quantity) else Halpha_flux
+            F_Hb=Hbeta_flux.value if isinstance(Hbeta_flux, astropy.units.Quantity) else Hbeta_flux
+
+            if F_Hb <= 0 or F_Ha <= 0:
+                raise ValueError("Hα and Hβ fluxes must be positive values.")
+
+            balmer_decrement = F_Ha / F_Hb
+            intrinsic_balmer_decrement = 2.86  # Case B recombination at T=10,000 K
+
+            if balmer_decrement < intrinsic_balmer_decrement:
+                warnings.warn("Observed Balmer decrement is less than intrinsic value. Setting E(B-V)_gas to 0.")
+                ebv_gas = 0.0
+                return 0.0
+
+            EBV_stars=0.3762 * np.log(balmer_decrement / intrinsic_balmer_decrement)
+            return EBV_stars
+
+        else:
+            raise ValueError("Either ebv_gas or both Halpha_flux and Hbeta_flux must be provided.")
+
+
+    def deredden_flux(self, spectrum, ebv_star=None, ebv_gas=None, ha_flux=None, hb_flux=None):
+        """
+        Apply dust correction to a Spectrum_1d object.
+        """
+        # 1. Determine E(B-V)_star
+        if ebv_star is None:
+            ebv_star = self.calculate_EBV_stars(ebv_gas, ha_flux, hb_flux)
+
+        # print(f"Applying Calzetti Correction with E(B-V)_star = {ebv_star:.4f}")
+
+        # 2. Create a deep copy of the spectrum to avoid modifying the original
+        spec_new = copy.deepcopy(spectrum)
+
+        # 3. Get Rest-frame Wavelengths in Microns for calculation
+        wave_quantity = spec_new.restframe_wavelengths.data
+        if not isinstance(wave_quantity, astropy.units.Quantity):
+            wave_quantity = wave_quantity * spec_new.restframe_wavelengths.unit
+
+        wave_micron = wave_quantity.to(astropy.units.micron).value
+
+        # 4. Calculate A_lambda & Correction Factor
+        k_lambda_vals = self._get_k_lambda(wave_micron)
+        A_lambda = k_lambda_vals * ebv_star
+        correction_factor = 10**(0.4 * A_lambda)
+
+        # 5. Apply to Fluxes (both lambda and nu) safely
+
+        # --- Update restframe_flux_lambda ---
+        if spec_new.restframe_flux_lambda is not None:
+
+            new_data_lambda = spec_new.restframe_flux_lambda.data * correction_factor
+
+            new_unc_lambda = None
+            if spec_new.restframe_flux_lambda.uncertainty is not None:
+                unc_type = type(spec_new.restframe_flux_lambda.uncertainty)
+                new_unc_vals = spec_new.restframe_flux_lambda.uncertainty.array * correction_factor
+                new_unc_lambda = unc_type(new_unc_vals)
+
+            spec_new.restframe_flux_lambda = astropy.nddata.NDDataArray(
+                data=new_data_lambda,
+                uncertainty=new_unc_lambda,
+                unit=spec_new.restframe_flux_lambda.unit
+            )
+
+        # --- Update restframe_flux_nu ---
+        if spec_new.restframe_flux_nu is not None:
+
+            new_data_nu = spec_new.restframe_flux_nu.data * correction_factor
+
+
+            new_unc_nu = None
+            if spec_new.restframe_flux_nu.uncertainty is not None:
+                unc_type = type(spec_new.restframe_flux_nu.uncertainty)
+                new_unc_vals = spec_new.restframe_flux_nu.uncertainty.array * correction_factor
+                new_unc_nu = unc_type(new_unc_vals)
+
+
+            spec_new.restframe_flux_nu = astropy.nddata.NDDataArray(
+                data=new_data_nu,
+                uncertainty=new_unc_nu,
+                unit=spec_new.restframe_flux_nu.unit
+            )
+
+        # 6. Reset processing arrays
+        spec_new.processing_wavelengths = spec_new.restframe_wavelengths
+        spec_new.processing_flux_lambda = spec_new.restframe_flux_lambda
+        spec_new.processing_flux_nu = spec_new.restframe_flux_nu
+
+        # Ensure processing wavelengths are in Angstroms
+        if spec_new.processing_wavelengths.unit != astropy.units.AA:
+             spec_new.processing_wavelengths = spec_new.processing_wavelengths.convert_unit_to(astropy.units.AA)
+
+        return spec_new
+
+def flux_density(wavelength, flux_lambda, target_region):
+    mask = (wavelength >= target_region[0]) & (wavelength <= target_region[1])
+    if np.sum(mask) == 0:
+        return np.nan
+    if np.isnan(flux_lambda[mask]).any():
+        return np.nan
+
+    return np.average(flux_lambda[mask],weights=wavelength[mask])
