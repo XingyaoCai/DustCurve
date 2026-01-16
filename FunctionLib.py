@@ -3258,61 +3258,82 @@ def BalmerDecrementUncertainty(alphaValve, alphaError, betaValve, betaError):
     return np.sqrt(err_ratio)
 
 
+
+
+
+
 class SpectrumAverager:
     def __init__(self):
         """
         Initialize the SpectrumAverager class.
         """
-        self.spectra_data=[]
-        self.common_wavelength=None
-        self.interpolated_fluxes=[]
-        self.average_flux=None
-        self.average_flux_err=None
-        self.normalization_factors=[]
-        self.normalized_fluxes=None
+        self.spectra_data = []
+        self.common_wavelength = None
+        self.interpolated_fluxes = []
 
-    def load_spectrum_catalog(self, catalog_entry_key_list,Catalog):
+        # 归一化数据
+        self.normalization_factors = []
+        self.normalized_fluxes = None
+
+        # 平均谱相关变量
+        self.average_flux = None          # 当前主要使用的平均谱 (可能是Raw也可能是Masked)
+        self.average_flux_err = None
+
+        # Masking 相关存储
+        self.average_flux_raw = None      # 永远存储未Mask的原始平均谱
+        self.average_flux_masked = None   # 存储Mask发射线后的平均谱
+
+    def load_spectrum_catalog(self, catalog_entry_key_list, Catalog, load_func):
         """
         Load spectra from a list of catalog entries.
 
         Parameters:
-        catalog_entry_key_list (list): List of catalog entries containing spectra.
+        -----------
+        catalog_entry_key_list : list
+            List of catalog entries containing spectra.
+        Catalog : object
+            The catalog object containing entry details.
+        load_func : function
+            A function that takes (filepath, redshift) and returns a spectrum object.
+            This decouples the class from external specific functions.
         """
-        spectra_data_len=len(self.spectra_data)
-        successful_loads=0
+        initial_count = len(self.spectra_data)
+        successful_loads = 0
 
-        for i,entry_key in enumerate(catalog_entry_key_list):
+        for i, entry_key in enumerate(catalog_entry_key_list):
             try:
-                entry=Catalog.catalog[entry_key]
-                if not entry.get('prism_filepath', None):
-                    print(f"Entry {entry_key} does not have prism_filepath attribute. Skipping.")
+                entry = Catalog.catalog[entry_key]
+                filepath = entry.get('prism_filepath', None)
+                if not filepath:
+                    print(f"Entry {entry_key}: Missing prism_filepath. Skipping.")
                     continue
 
-                prism_spectrum=Load_Spectrum_From_Fits(entry['prism_filepath'], entry['prism_redshift'])
+                # 使用传入的函数加载
+                prism_spectrum = load_func(filepath, entry.get('prism_redshift', 0))
 
-                # prism_spectrum.set_boundarys(1250*u.AA, 8000*u.AA)
+                # 数据完整性检查
+                wavelengths = prism_spectrum.processing_wavelengths.data
+                fluxes = prism_spectrum.processing_flux_lambda.data
 
-
-                if len(prism_spectrum.processing_wavelengths.data)==0 or len(prism_spectrum.processing_flux_lambda.data)==0:
-                    print(f"Entry {entry_key} has empty wavelength or flux data. Skipping.")
+                if len(wavelengths) == 0 or len(fluxes) == 0:
                     continue
 
-                if len(prism_spectrum.processing_wavelengths.data)!=len(prism_spectrum.processing_flux_lambda.data):
-                    print(f"Entry {entry_key} has mismatched wavelength and flux lengths. Skipping.")
+                if len(wavelengths) != len(fluxes):
+                    print(f"Entry {entry_key}: Mismatched data lengths. Skipping.")
                     continue
 
-                mask=~(np.isnan(prism_spectrum.processing_wavelengths.data) | np.isnan(prism_spectrum.processing_flux_lambda.data)|(prism_spectrum.processing_wavelengths.data==0))
-                if np.sum(mask)<2:
-                    print(f"Entry {entry_key} has insufficient valid data points. Skipping.")
+                # 过滤无效值
+                mask = ~(np.isnan(wavelengths) | np.isnan(fluxes) | (wavelengths <= 0))
+                if np.sum(mask) < 2:
                     continue
 
                 self.spectra_data.append({
-                    'index':spectra_data_len+i,
-                    'spectrum1d':prism_spectrum,
-                    'wavelengths':prism_spectrum.processing_wavelengths.data[mask],
-                    'fluxes':prism_spectrum.processing_flux_lambda.data[mask]
+                    'index': initial_count + i,
+                    'key': entry_key,
+                    'wavelengths': wavelengths[mask],
+                    'fluxes': fluxes[mask]
                 })
-                successful_loads+=1
+                successful_loads += 1
 
             except Exception as e:
                 print(f"Failed to load spectrum for entry {entry_key}: {e}")
@@ -3320,471 +3341,389 @@ class SpectrumAverager:
 
         return successful_loads > 0
 
-
     def create_common_wavelength_grid(self, wavelength_range=None, grid_size=None):
         """
         Create a common wavelength grid for averaging.
-
-        Parameters:
-        -------
-        wavelength_range: tuple, optional
-            Tuple specifying the (min, max) wavelength range, if None then automatically use the overlapping range of all spectra.
-        grid_size: float, optional
-            Desired wavelength grid size in Angstroms. If None, it will be determined based on the maximum number of data points among the spectra.
         """
-
         if not self.spectra_data:
-            raise ValueError("No spectra data loaded. Please load spectra before creating a common wavelength grid.")
+            raise ValueError("No spectra data loaded.")
 
-        all_min_wavelengths = [spectrum_data['wavelengths'].min() for spectrum_data in self.spectra_data]
-        all_max_wavelengths = [spectrum_data['wavelengths'].max() for spectrum_data in self.spectra_data]
+        all_min = [s['wavelengths'].min() for s in self.spectra_data]
+        all_max = [s['wavelengths'].max() for s in self.spectra_data]
 
         if wavelength_range is None:
-            common_min_wavelength = max(all_min_wavelengths)
-            common_max_wavelength = min(all_max_wavelengths)
+            common_min = max(all_min)
+            common_max = min(all_max)
         else:
-            common_min_wavelength, common_max_wavelength = wavelength_range
+            common_min, common_max = wavelength_range
 
-        if common_min_wavelength >= common_max_wavelength:
-            raise ValueError("No overlapping wavelength range found among the spectra.")
+        if common_min >= common_max:
+            warnings.warn("No overlapping range found using intersection. Checking full range union.")
+            common_min = min(all_min)
+            common_max = max(all_max)
+            if common_min >= common_max:
+                raise ValueError("Invalid wavelength range.")
 
         if grid_size is None:
-            spectrum_data_points=[]
-            for spec in self.spectra_data:
-                mask=(spec['wavelengths']>=common_min_wavelength) & (spec['wavelengths']<=common_max_wavelength)
-                valid_datapoints=np.sum(mask)
-                if valid_datapoints>1:
-                    spectrum_data_points.append(valid_datapoints)
-
-            if spectrum_data_points:
-                max_data_points = max(spectrum_data_points)
-                num_points = max_data_points
-            else:
-                num_points=1000
+            max_points = max([len(s['wavelengths']) for s in self.spectra_data])
+            num_points = max_points
         else:
-            num_points = int((common_max_wavelength - common_min_wavelength) / grid_size) + 1
+            num_points = int((common_max - common_min) / grid_size) + 1
 
-        self.common_wavelength = np.linspace(common_min_wavelength, common_max_wavelength, num_points)
-
+        self.common_wavelength = np.linspace(common_min, common_max, int(num_points))
         return self.common_wavelength
 
     def interpolate_spectra(self, interpolation_method='linear'):
         """
         Interpolate all loaded spectra onto the common wavelength grid.
-
-        Parameters:
-        ------
-        interpolation_method: str, optional
-            Interpolation method to use. Default is 'linear', can also be 'nearest', 'cubic' and 'quadratic'.
         """
-
         if self.common_wavelength is None:
             self.create_common_wavelength_grid()
 
         self.interpolated_fluxes = []
-        successful_interpolations=0
+        successful_interpolations = 0
 
-        for spectrum_packed_data in self.spectra_data:
+        for spec in self.spectra_data:
             try:
-                wavelength_data = spectrum_packed_data['wavelengths']
-                flux_data = spectrum_packed_data['fluxes']
+                w_clean = spec['wavelengths']
+                f_clean = spec['fluxes']
 
-                mask=(wavelength_data>=self.common_wavelength.min()) & (wavelength_data<=self.common_wavelength.max())
+                interp_func = scipy.interpolate.interp1d(
+                    w_clean, f_clean,
+                    kind=interpolation_method,
+                    bounds_error=False,
+                    fill_value=np.nan
+                )
 
-                if np.sum(mask)<2:
-                    print(f"Spectrum index {spectrum_packed_data['index']} has insufficient data in the common wavelength range. Skipping.")
-                    continue
+                interp_flux = interp_func(self.common_wavelength)
 
-                wavelength_data_valid = wavelength_data[mask]
-                flux_data_valid = flux_data[mask]
-
-                interpolation_function = scipy.interpolate.interp1d(wavelength_data_valid, flux_data_valid, kind=interpolation_method,bounds_error=False, fill_value=np.nan)
-
-                interpolated_flux = interpolation_function(self.common_wavelength)
-
-                if np.all(np.isnan(interpolated_flux)):
-                    print(f"Spectrum index {spectrum_packed_data['index']} interpolation resulted in all NaN values. Skipping.")
-                    continue
-
-                self.interpolated_fluxes.append(interpolated_flux)
-                successful_interpolations+=1
+                # 即使全是NaN也保留占位，保持索引对齐
+                self.interpolated_fluxes.append(interp_flux)
+                if not np.all(np.isnan(interp_flux)):
+                    successful_interpolations += 1
 
             except Exception as e:
-                print(f"Failed to interpolate spectrum index {spectrum_packed_data['index']}: {e}")
+                print(f"Failed to interpolate spectrum {spec['index']}: {e}")
+                self.interpolated_fluxes.append(np.full_like(self.common_wavelength, np.nan))
                 continue
 
+        self.interpolated_fluxes = np.array(self.interpolated_fluxes)
         return successful_interpolations > 0
 
-
-    def spectrum_normalization(self, reference_wavelength=5500.0, target_flux=1e-19):
+    def spectrum_normalization(self, reference_wavelength=5500.0, target_flux=1e-19, window_width=10.0):
         """
-        Normalize the interpolated spectra at a reference wavelength.
-
-        Parameters:
-        ----------
-        reference_wavelength: float
-            Wavelength at which to normalize the spectra. Default is 5500.0 Angstroms in V-band.
-        target_flux: float
-            Target flux value for normalization. Default is 1e-19 erg/s/cm^2/Angstrom.
+        Normalize spectra at a reference wavelength using a small window to reduce noise.
         """
+        if len(self.interpolated_fluxes) == 0:
+            raise ValueError("No interpolated spectra available.")
 
-        if not self.interpolated_fluxes:
-            raise ValueError("No interpolated spectra available. Please interpolate spectra before normalization.")
-
-        if reference_wavelength < self.common_wavelength.min() or reference_wavelength > self.common_wavelength.max():
-            raise ValueError(f"Reference wavelength {reference_wavelength} is out of the common wavelength range [{self.common_wavelength.min()}, {self.common_wavelength.max()}].")
-
-        ref_index=np.argmin(np.abs(self.common_wavelength - reference_wavelength))
-        actual_ref_wavelength=self.common_wavelength[ref_index]
+        if (reference_wavelength < self.common_wavelength.min()) or (reference_wavelength > self.common_wavelength.max()):
+            raise ValueError(f"Reference wavelength {reference_wavelength} out of range.")
 
         self.normalization_factors = []
         self.normalized_fluxes = []
-        successful_normalizations=0
 
-        for i,interpolated_flux in enumerate(self.interpolated_fluxes):
-            try:
-                flux_at_ref = interpolated_flux[ref_index]
+        window_mask = (self.common_wavelength >= (reference_wavelength - window_width/2)) & \
+                      (self.common_wavelength <= (reference_wavelength + window_width/2))
 
-                if np.isnan(flux_at_ref) or flux_at_ref == 0:
-                    print(f"Spectrum index {i} has invalid flux at reference wavelength {actual_ref_wavelength}. Skipping.")
-                    continue
+        if np.sum(window_mask) == 0:
+            ref_index = np.argmin(np.abs(self.common_wavelength - reference_wavelength))
+            window_mask[ref_index] = True
 
-                normalization_factor = target_flux / flux_at_ref
-                normalized_flux = interpolated_flux * normalization_factor
+        successful = 0
+        for i, flux in enumerate(self.interpolated_fluxes):
+            flux_in_window = flux[window_mask]
+            mean_flux = np.nanmedian(flux_in_window)
 
-                self.normalization_factors.append(normalization_factor)
-                self.normalized_fluxes.append(normalized_flux)
-                successful_normalizations+=1
-
-            except Exception as e:
-                print(f"Failed to normalize spectrum index {i}: {e}")
+            if np.isnan(mean_flux) or mean_flux <= 0:
+                self.normalization_factors.append(np.nan)
+                self.normalized_fluxes.append(np.full_like(flux, np.nan))
                 continue
 
-        if self.normalized_fluxes:
-            self.normalized_fluxes = np.array(self.normalized_fluxes).copy()
+            factor = target_flux / mean_flux
+            self.normalization_factors.append(factor)
+            self.normalized_fluxes.append(flux * factor)
+            successful += 1
 
-        return successful_normalizations > 0
+        self.normalized_fluxes = np.array(self.normalized_fluxes)
+        self.normalization_factors = np.array(self.normalization_factors)
+        return successful > 0
 
     def spectrum_normalization_within_range(self, wavelength_range=(5000.0, 6000.0), target_flux=None):
         """
-        Normalize the interpolated spectra within a specified wavelength range.
-
-        Parameters:
-        ----------
-        wavelength_range: tuple
-            Wavelength range (min, max) within which to normalize the spectra.
-        target_flux: float, optional
-            Target flux value for normalization. If None, use the median flux within the range.
+        Normalize based on the median flux within a wavelength range.
         """
+        if len(self.interpolated_fluxes) == 0:
+            raise ValueError("No interpolated spectra available.")
 
-        if not self.interpolated_fluxes:
-            raise ValueError("No interpolated spectra available. Please interpolate spectra before normalization.")
+        w_mask = (self.common_wavelength >= wavelength_range[0]) & \
+                 (self.common_wavelength <= wavelength_range[1])
 
-        target_region = wavelength_range
+        if np.sum(w_mask) == 0:
+            raise ValueError("Normalization range contains no data points.")
 
-        flux_densities_in_region = []
-        for interpolated_flux in self.interpolated_fluxes:
-            wavelength=self.common_wavelength
-            flux_lambda=interpolated_flux
+        flux_subset = self.interpolated_fluxes[:, w_mask]
+        median_fluxes = np.nanmedian(flux_subset, axis=1)
 
-            flux_density_in_region = flux_density(wavelength, flux_lambda, target_region)
+        if target_flux is None:
+            valid_medians = median_fluxes[~np.isnan(median_fluxes)]
+            normalization_base = np.median(valid_medians) if len(valid_medians) > 0 else 1.0
+        else:
+            normalization_base = target_flux
 
-            if np.isnan(flux_density_in_region):
-                flux_densities_in_region.append(np.nan)
+        # 防止除以0或NaN
+        with np.errstate(divide='ignore', invalid='ignore'):
+            self.normalization_factors = normalization_base / median_fluxes
 
-            else:
-                flux_densities_in_region.append(flux_density_in_region)
+        # 处理无效的 normalization factors
+        self.normalization_factors[~np.isfinite(self.normalization_factors)] = np.nan
 
-        flux_densities_in_region = np.array(flux_densities_in_region)
+        # 应用归一化
+        factors_reshaped = self.normalization_factors[:, np.newaxis]
+        self.normalized_fluxes = self.interpolated_fluxes * factors_reshaped
 
-        normalization_value=np.nanmedian(flux_densities_in_region) if target_flux is None else target_flux
-        normalization_factors = normalization_value / flux_densities_in_region
-        self.normalization_factors = normalization_factors
-        self.normalized_fluxes = []
-        for i,interpolated_flux in enumerate(self.interpolated_fluxes):
-            try:
-                normalization_factor = normalization_factors[i]
-                if np.isnan(normalization_factor):
-                    print(f"Spectrum index {i} has invalid normalization factor. Skipping.")
-                    continue
-
-                normalized_flux = interpolated_flux * normalization_factor
-
-                self.normalized_fluxes.append(normalized_flux)
-
-            except Exception as e:
-                print(f"Failed to normalize spectrum index {i}: {e}")
-                continue
-
-        if self.normalized_fluxes:
-            self.normalized_fluxes = np.array(self.normalized_fluxes).copy()
         return True
 
-    def compute_average_spectrum(self, method='mean',ignore_nan=True, use_percentile_filter=False, lower_percentile=16, upper_percentile=84):
+    def compute_average_spectrum(self, method='mean', ignore_nan=True, use_percentile_filter=False, lower_percentile=16, upper_percentile=84):
         """
-        Compute the average spectrum from the normalized spectra on the common wavelength grid.
-
-        Parameters:
-        ------
-        method: str
-            Method to compute the average spectrum. Options are 'mean' or 'median'. Default is 'mean'.
-        ignore_nan: bool
-            Whether to ignore NaN values in the computation. Default is True.
-        use_percentile_filter: bool
-            Whether to use percentile filtering to exclude outliers. Default is False.
-        lower_percentile: float
-            If use_percentile_filter is True, the lower percentile to exclude. Default is 16.
-        upper_percentile: float
-            If use_percentile_filter is True, the upper percentile to exclude. Default is 84.
+        Compute average spectrum using vectorized operations.
+        Automatically backs up result to self.average_flux_raw.
         """
+        if self.normalized_fluxes is None:
+            raise ValueError("No normalized spectra available.")
 
-        if not hasattr(self, 'normalized_fluxes') or self.normalized_fluxes is None:
-            raise ValueError("No normalized spectra available. Please normalize spectra before computing the average.")
-
-        flux_matrix=np.array(self.normalized_fluxes)
+        flux_matrix = self.normalized_fluxes
 
         if use_percentile_filter:
-            self.average_flux, self.average_flux_err = self._compute_percentile_filtered_average(
-                flux_matrix, method, lower_percentile, upper_percentile, ignore_nan)
-
+            avg_flux, avg_err = self._compute_percentile_filtered_average_vectorized(
+                flux_matrix, method, lower_percentile, upper_percentile
+            )
         else:
-            if ignore_nan:
-                if method=='mean':
-                    self.average_flux = np.nanmean(flux_matrix, axis=0)
-                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0, nan_policy='omit')
-                elif method=='median':
-                    self.average_flux = np.nanmedian(flux_matrix, axis=0)
-                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0, nan_policy='omit')
-                else:
-                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
-
+            nan_policy = 'omit' if ignore_nan else 'propagate'
+            if method == 'mean':
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    avg_flux = np.nanmean(flux_matrix, axis=0)
+                    avg_err = scipy.stats.sem(flux_matrix, axis=0, nan_policy=nan_policy)
+            elif method == 'median':
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    avg_flux = np.nanmedian(flux_matrix, axis=0)
+                    avg_err = 1.2533 * scipy.stats.sem(flux_matrix, axis=0, nan_policy=nan_policy)
             else:
-                if method=='mean':
-                    self.average_flux = np.mean(flux_matrix, axis=0)
-                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0)
-                elif method=='median':
-                    self.average_flux = np.median(flux_matrix, axis=0)
-                    self.average_flux_err = scipy.stats.sem(flux_matrix, axis=0)
-                else:
-                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
+                raise ValueError("Method must be 'mean' or 'median'")
 
-        valid_counts=np.sum(~np.isnan(flux_matrix), axis=0) if ignore_nan else flux_matrix.shape[0]
+        valid_counts = np.sum(~np.isnan(flux_matrix), axis=0)
+
+        # 保存结果
+        self.average_flux = avg_flux
+        self.average_flux_err = avg_err
+
+        # 备份到 RAW
+        self.average_flux_raw = avg_flux.copy()
+        # 重置 Masked 数据，因为 Raw 变了，Masked 需要重新计算
+        self.average_flux_masked = None
 
         return self.common_wavelength, self.average_flux, self.average_flux_err, valid_counts
 
-    def _compute_percentile_filtered_average(self, flux_matrix, method, lower_percentile, upper_percentile, ignore_nan):
+    def _compute_percentile_filtered_average_vectorized(self, flux_matrix, method, lower_p, upper_p):
         """
-        Helper function to compute average spectrum with percentile filtering.
-
-        Parameters:
-        ----------
-        flux_matrix: np.ndarray
-            2D array of shape (num_spectra, num_wavelengths) containing normalized fluxes.
-        method: str
-            Method to compute the average spectrum. Options are 'mean' or 'median'.
-        lower_percentile: float
-            Lower percentile to exclude.
-        upper_percentile: float
-            Upper percentile to exclude.
-        ignore_nan: bool
-            Whether to ignore NaN values in the computation.
-
-        Returns:
-        -------
-        average_flux: np.ndarray
-            1D array of average flux values.
-        average_flux_err: np.ndarray
-            1D array of standard error of the mean for the average flux.
-
+        Helper for fast percentile filtering.
         """
-        num_wavelengths = flux_matrix.shape[1]
-        average_flux = np.empty(num_wavelengths)
-        average_flux_err = np.empty(num_wavelengths)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            limit_low = np.nanpercentile(flux_matrix, lower_p, axis=0)
+            limit_high = np.nanpercentile(flux_matrix, upper_p, axis=0)
 
-        total_used_points=0
-        total_original_points=0
+        # 使用广播机制创建 Mask
+        mask = (flux_matrix >= limit_low[np.newaxis, :]) & (flux_matrix <= limit_high[np.newaxis, :])
+        filtered_matrix = np.where(mask, flux_matrix, np.nan)
 
-        for index in range(num_wavelengths):
-            wavelength_fluxes = flux_matrix[:, index]
-
-            if ignore_nan:
-                valid_fluxes = wavelength_fluxes[~np.isnan(wavelength_fluxes)]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            if method == 'median':
+                avg = np.nanmedian(filtered_matrix, axis=0)
+                err = 1.2533 * scipy.stats.sem(filtered_matrix, axis=0, nan_policy='omit')
             else:
-                valid_fluxes = wavelength_fluxes
+                avg = np.nanmean(filtered_matrix, axis=0)
+                err = scipy.stats.sem(filtered_matrix, axis=0, nan_policy='omit')
+        return avg, err
 
-            total_original_points+=len(valid_fluxes)
-
-            if len(valid_fluxes) == 0:
-                average_flux[index] = np.nan
-                average_flux_err[index] = np.nan
-                continue
-
-            try:
-                lower_bound = np.percentile(valid_fluxes, lower_percentile)
-                upper_bound = np.percentile(valid_fluxes, upper_percentile)
-
-                filtered_fluxes = valid_fluxes[(valid_fluxes >= lower_bound) & (valid_fluxes <= upper_bound)]
-
-                if len(filtered_fluxes) == 0:
-                    filtered_fluxes = valid_fluxes
-
-                total_used_points+=len(filtered_fluxes)
-
-                if method == 'mean':
-                    average_flux[index] = np.mean(filtered_fluxes)
-                    average_flux_err[index] = scipy.stats.sem(filtered_fluxes)
-                elif method == 'median':
-                    average_flux[index] = np.median(filtered_fluxes)
-                    average_flux_err[index] = scipy.stats.sem(filtered_fluxes)
-                else:
-                    raise ValueError(f"Unknown method '{method}'. Use 'mean' or 'median'.")
-
-            except Exception as e:
-                continue
-
-
-        return average_flux, average_flux_err
-
-    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,figsize=(25,14), alpha=0.3, show_normalization_point=True, reference_wavelength=5500.0, ylim=None,if_show=True):
+    def apply_emission_line_mask(self, mask_regions):
         """
-        Plot the average spectrum along with individual normalized spectra.
+        Mask emission lines by setting flux values to NaN within specified regions.
+        Stores result in self.average_flux_masked.
 
         Parameters:
-        ----------
-        show_individual: bool
-            Whether to plot individual normalized spectra. Default is True.
-        show_average: bool
-            Whether to plot the average spectrum. Default is True.
-        show_error: bool
-            Whether to plot error bars for the average spectrum. Default is True.
-        figsize: tuple
-            Figure size for the plot. Default is (25, 14).
-        alpha: float
-            Transparency level for individual spectra. Default is 0.3.
-        show_normalization_point: bool
-            Whether to highlight the normalization point. Default is True.
-        reference_wavelength: float
-            Wavelength used for normalization. Default is 5500.0 Angstroms.
-        ylim: tuple or None
-            Y-axis limits for the plot. If None, it will be set automatically.
+        -----------
+        mask_regions : list of tuples
+            [(start_wave, end_wave), ...]
         """
+        if self.average_flux_raw is None:
+            raise ValueError("Average spectrum has not been computed yet.")
 
-        fig, ax= plt.subplots(figsize=figsize)
+        if self.common_wavelength is None:
+            raise ValueError("Common wavelength grid is missing.")
+
+        # 从 Raw 数据开始 Mask
+        masked_flux = self.average_flux_raw.copy()
+
+        for (start_wave, end_wave) in mask_regions:
+            mask_indices = (self.common_wavelength >= start_wave) & (self.common_wavelength <= end_wave)
+            masked_flux[mask_indices] = np.nan
+
+        self.average_flux_masked = masked_flux
+
+        # 将主指针指向 masked 版本 (可选)
+        self.average_flux = self.average_flux_masked
+
+        print(f"Applied masks to {len(mask_regions)} regions.")
+        return self.average_flux_masked
+
+    def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,
+                              show_masked_comparison=True, figsize=(15, 8), alpha=0.1,
+                              show_normalization_point=True, reference_wavelength=5500.0,
+                              ylim=None, if_show=True):
+        """
+        Plot average spectrum. Supports visualizing masked vs unmasked data.
+        """
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # 1. 绘制个体光谱
         if show_individual and self.normalized_fluxes is not None:
-            for normalized_flux in self.normalized_fluxes:
-                ax.plot(self.common_wavelength, normalized_flux, color='gray', alpha=alpha, label='Individual Normalized Spectra' if 'Individual Normalized Spectra' not in ax.get_legend_handles_labels()[1] else "")
-        if show_average and self.average_flux is not None:
-            ax.plot(self.common_wavelength, self.average_flux, color='k',linewidth=2, label='Average Spectrum')
+            has_label = False
+            for flux in self.normalized_fluxes:
+                if np.all(np.isnan(flux)): continue
+                label = 'Individual Spectra' if not has_label else None
+                ax.plot(self.common_wavelength, flux, color='gray', alpha=alpha, label=label, lw=0.5, zorder=1)
+                has_label = True
+
+        # 2. 绘制平均光谱
+        if show_average:
+            # 存在 Masked 数据且要求对比显示
+            if self.average_flux_masked is not None and show_masked_comparison:
+                # 原始谱 (背景)
+                ax.plot(self.common_wavelength, self.average_flux_raw, color='orange', alpha=0.6,
+                        linewidth=1.5, label='Original (with Emission)', zorder=2)
+                # Masked 谱 (前景，黑色)
+                ax.plot(self.common_wavelength, self.average_flux_masked, color='k',
+                        linewidth=2, label='Masked Continuum', zorder=3)
+
+            # 仅显示当前的 average_flux
+            elif self.average_flux is not None:
+                ax.plot(self.common_wavelength, self.average_flux, color='k',
+                        linewidth=2, label='Average Spectrum', zorder=3)
+
+            # 绘制误差
             if show_error and self.average_flux_err is not None:
-                ax.fill_between(self.common_wavelength, self.average_flux - self.average_flux_err, self.average_flux + self.average_flux_err, color='k', alpha=0.2, label='±1σ Error')
+                curr_flux = self.average_flux_raw if self.average_flux_raw is not None else self.average_flux
+                if curr_flux is not None:
+                    ax.fill_between(self.common_wavelength,
+                                    curr_flux - self.average_flux_err,
+                                    curr_flux + self.average_flux_err,
+                                    color='red', alpha=0.2, label='Standard Error', zorder=2)
 
+        # 3. 绘制归一化点 (使用 Raw 数据定位)
+        if show_normalization_point:
+            ref_flux = self.average_flux_raw if self.average_flux_raw is not None else self.average_flux
+            if ref_flux is not None:
+                idx = np.argmin(np.abs(self.common_wavelength - reference_wavelength))
+                if idx < len(ref_flux) and not np.isnan(ref_flux[idx]):
+                    ax.scatter(self.common_wavelength[idx], ref_flux[idx],
+                               color='blue', s=100, zorder=10, marker='X', label='Norm Point')
 
-        if show_normalization_point and self.normalized_fluxes is not None:
-            ref_index=np.argmin(np.abs(self.common_wavelength - reference_wavelength))
-            actual_ref_wavelength=self.common_wavelength[ref_index]
-            avg_flux_at_ref=self.average_flux[ref_index] if self.average_flux is not None else None
-            if avg_flux_at_ref is not None:
-                ax.scatter([actual_ref_wavelength], [avg_flux_at_ref], color='red', s=100, zorder=5, label='Normalization Point')
+        ax.set_xlabel('Wavelength ($\AA$)', fontsize=16)
+        ax.set_ylabel('Normalized Flux', fontsize=16)
+        ax.set_title('Average Spectrum', fontsize=18)
 
-        ax.set_xlabel('Wavelength (Angstrom)', fontsize=24)
-        ax.set_ylabel('Normalized Flux (erg/s/cm²/Angstrom)', fontsize=24)
-        ax.set_title('Average Spectrum with Individual Normalized Spectra', fontsize=28)
-        if ylim is not None:
+        if ylim:
             ax.set_ylim(ylim)
         else:
-            ax.set_ylim(0,np.nanmax(self.average_flux)*1.2 if self.average_flux is not None else None)
+            # 自动缩放
+            target = self.average_flux_raw if self.average_flux_raw is not None else self.average_flux
+            if target is not None:
+                valid = target[~np.isnan(target)]
+                if len(valid) > 0:
+                    ymax = np.percentile(valid, 99) * 1.5
+                    ax.set_ylim(0, ymax)
 
+        ax.legend(loc='best', fontsize=12)
+        plt.tight_layout()
 
-
-        ax.spines['bottom'].set_linewidth(2)
-        ax.spines['top'].set_linewidth(2)
-        ax.spines['left'].set_linewidth(2)
-        ax.spines['right'].set_linewidth(2)
-        ax.spines['bottom'].set_color('black')
-        ax.spines['top'].set_color('black')
-        ax.spines['left'].set_color('black')
-        ax.spines['right'].set_color('black')
-        ax.yaxis.set_ticks_position('both')
-        ax.xaxis.set_ticks_position('both')
-        ax.xaxis.set_tick_params(width=2, direction='in', which='both', labelsize=18)
-        ax.yaxis.set_tick_params(width=2, direction='in', which='both', labelsize=18)
-        ax.xaxis.set_tick_params(length=6, which='major')
-        ax.xaxis.set_tick_params(length=3, which='minor')
-        ax.yaxis.set_tick_params(length=6, which='major')
-        ax.yaxis.set_tick_params(length=3, which='minor')
-        ax.legend(fontsize=20, loc='best')
         if if_show:
             plt.show()
         return fig, ax
 
     def get_normalization_factors(self):
         """
-        Get the normalization factors used for each spectrum.
-
-        Returns:
-        -------
-        normalization_dict: dict
-            Dictionary mapping spectrum indices to their normalization factors.
+        Get normalization statistics.
         """
-        return {'normalization_factors': self.normalization_factors.copy() if self.normalization_factors else None,
-                'num_normalized_spectra': len(self.normalization_factors) if self.normalization_factors else 0,
-                'factor_mean': np.mean(self.normalization_factors) if self.normalization_factors else None,
-                'factor_std': np.std(self.normalization_factors) if self.normalization_factors else None
-                }
-
-    def get_average_spectrum_data(self):
-        """
-        Get the computed average spectrum data.
-
-        Returns:
-        -------
-        average_spectrum_dict: dict
-            Dictionary containing common wavelengths, average flux, and average flux error.
-        """
-        return {'common_wavelength': self.common_wavelength.copy() if self.common_wavelength is not None else None,
-                'average_flux': self.average_flux.copy() if self.average_flux is not None else None,
-                'average_flux_err': self.average_flux_err.copy() if self.average_flux_err is not None else None,
-                'normalization_info': self.get_normalization_factors()
-                }
+        if len(self.normalization_factors) == 0:
+            return None
+        valid_factors = self.normalization_factors[~np.isnan(self.normalization_factors)]
+        return {
+            'factors': self.normalization_factors,
+            'count': len(valid_factors),
+            'mean': np.mean(valid_factors) if len(valid_factors) > 0 else None,
+            'std': np.std(valid_factors) if len(valid_factors) > 0 else None
+        }
 
     def save_average_spectrum_to_file(self, filepath):
         """
         Save the average spectrum data to a file.
-
-        Parameters:
-        ----------
-        filepath: str
-            Path to the file where the average spectrum data will be saved.
+        Saves 'flux_raw' and optionally 'flux_masked' if available.
         """
+        if self.average_flux_raw is None and self.average_flux is None:
+            raise ValueError("No average spectrum data to save.")
 
-        if self.average_flux is None or self.common_wavelength is None:
-            raise ValueError("Average spectrum data is not available. Please compute the average spectrum before saving.")
+        # 优先使用 Raw，如果没有则使用普通 average
+        base_flux = self.average_flux_raw if self.average_flux_raw is not None else self.average_flux
 
         data_to_save = {
             'common_wavelength': self.common_wavelength,
-            'average_flux': self.average_flux,
+            'average_flux': base_flux, # 兼容旧读取习惯
+            'flux_raw': base_flux,
             'average_flux_err': self.average_flux_err
         }
+
+        # 如果有 Masked 数据，额外保存
+        if self.average_flux_masked is not None:
+            data_to_save['flux_masked'] = self.average_flux_masked
+        else:
+            # 为了数据结构一致性，如果没有masked，副本一份 raw
+            data_to_save['flux_masked'] = base_flux
+
         np.savez(filepath, **data_to_save)
+        print(f"Saved spectrum data to {filepath}")
 
     def load_average_spectrum_from_file(self, filepath):
         """
-        Load the average spectrum data from a file saved via save_average_spectrum_to_file.
-
-        Args:
-            filepath (str): Path to the file from which the average spectrum data will be loaded.
+        Load the average spectrum data.
         """
-
         if not os.path.isfile(filepath):
-            raise FileNotFoundError(f"The file {filepath} does not exist.")
+            raise FileNotFoundError(f"File {filepath} not found.")
 
         loaded_data = np.load(filepath)
-
         self.common_wavelength = loaded_data['common_wavelength']
-        self.average_flux = loaded_data['average_flux']
         self.average_flux_err = loaded_data['average_flux_err']
 
+        # 尝试读取新结构，兼容旧结构
+        if 'flux_raw' in loaded_data:
+            self.average_flux_raw = loaded_data['flux_raw']
+        else:
+            self.average_flux_raw = loaded_data['average_flux']
+
+        if 'flux_masked' in loaded_data:
+            self.average_flux_masked = loaded_data['flux_masked']
+            self.average_flux = self.average_flux_masked # 默认加载后主要指引为 masked
+        else:
+            self.average_flux = self.average_flux_raw
+            self.average_flux_masked = None
+
         return True
+
+
+
 
 
 
