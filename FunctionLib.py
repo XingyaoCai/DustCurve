@@ -4013,26 +4013,25 @@ class DustAttenuationAnalyst:
         return -1
 
     def load_and_group_objects(self, target_ids):
-        """第一步：加载 ID 并按巴耳末递减分组"""
+        """第一步：加载 ID，分组，并计算每组 Balmer Decrement 的均值和标准误"""
+        import scipy.stats # 确保导入
+
         print(f"Categorizing {len(target_ids)} objects...")
         self.groups.clear()
-        self.group_mean_decrements.clear()
+        self.group_decrements_stats = {} # 改名，存储更详细的统计信息
 
         group_values = defaultdict(list)
 
+        # ... (循环部分保持不变，收集 group_values) ...
         for survey_id in target_ids:
             entry = self.catalog.load_spectrum_info(survey_id)
             if not entry: continue
-
             try:
                 params = entry.get('dust_curve_parameters', {})
                 line_params = params.get('Best_Balmer_Decrement_Line_Parameters', {})
-
                 ha = line_params.get('halpha_flux', 0)
                 hb = line_params.get('hbeta_flux', 0)
-
                 bd_val = self._calculate_balmer_decrement(ha, hb)
-
                 if bd_val is not None:
                     g_idx = self._get_group_index(bd_val)
                     if g_idx != -1:
@@ -4041,12 +4040,32 @@ class DustAttenuationAnalyst:
             except Exception:
                 continue
 
+        # 计算统计量
         for idx in sorted(self.groups.keys()):
-            vals = group_values[idx]
-            mean_val = np.mean(vals)
-            if idx == 0: mean_val = 0.0 # 强制参考组为 0
-            self.group_mean_decrements[idx] = mean_val
-            print(f"Group {idx}: {len(vals)} objects, Mean BD={mean_val:.3f}")
+            vals = np.array(group_values[idx])
+            n_samples = len(vals)
+
+            # Mean
+            if idx == 0:
+                mean_val = 0.0 # Reference 强制为 0
+            else:
+                mean_val = np.mean(vals)
+
+            # Standard Error (SEM) = std / sqrt(N)
+            # 即使 Group 0 均值强制为 0，它的统计不确定性依然存在 (反映了参考样本的离散度)
+            if n_samples > 1:
+                sem_val = scipy.stats.sem(vals)
+            else:
+                # 只有一个样本时，给一个经验误差 (比如 10%) 或 0
+                sem_val = 0.1 * np.abs(mean_val) if mean_val != 0 else 0.05
+
+            self.group_decrements_stats[idx] = {
+                'mean': mean_val,
+                'err': sem_val,
+                'N': n_samples
+            }
+            print(f"Group {idx}: N={n_samples}, Mean BD={mean_val:.3f} +/- {sem_val:.3f}")
+
 
     def compute_average_spectra(self):
         """第二步：堆叠光谱"""
@@ -4155,10 +4174,10 @@ class DustAttenuationAnalyst:
     #         print(f"Computed effective curve using {mode} reference.")
     #     else:
     #         print("No groups available to compute curves.")
-
     def compute_attenuation_curves(self, mode='smoothed'):
-        """第四步：计算有效衰减曲线及其误差"""
-        # ... (前部分代码保持不变: 确定 ref_flux_used) ...
+        """第四步：计算有效衰减曲线及完整误差传播 (Flux误差 + Tau误差)"""
+
+        # ... (Reference Flux 获取逻辑保持不变) ...
         if mode == 'smoothed':
             if self.reference_smooth_flux is None: self.compute_smooth_reference()
             ref_flux_used = self.reference_smooth_flux
@@ -4169,65 +4188,78 @@ class DustAttenuationAnalyst:
             raise ValueError("mode error")
 
         self.curve_mode = mode
-        ref_tau = self.group_mean_decrements[0]
+
+        # 获取 Reference 的 Tau 统计量
+        ref_tau_stats = self.group_decrements_stats[0]
+        ref_tau_mean = ref_tau_stats['mean']
+        ref_tau_err = ref_tau_stats['err'] # sigma_tau_ref
+
         self.attenuation_curves = {}
 
         for g_idx, averager in self.averagers.items():
             if g_idx == 0: continue
 
+            # 1. Flux 数据
             target_flux = averager.average_flux_masked
-            # 获取 Flux Error (SEM)
             target_flux_err = averager.average_flux_err
-            if target_flux_err is None:
-                # 如果没有误差，给一个极小值避免除以0 (虽不应该发生)
-                target_flux_err = np.zeros_like(target_flux) + 1e-18
+            if target_flux_err is None: target_flux_err = np.zeros_like(target_flux) + 1e-10
 
-            target_tau = self.group_mean_decrements[g_idx]
-            delta_tau = target_tau - ref_tau
+            # 2. Tau 数据
+            target_tau_stats = self.group_decrements_stats[g_idx]
+            target_tau_mean = target_tau_stats['mean']
+            target_tau_err = target_tau_stats['err']
 
-            # --- Q 计算 ---
+            # Delta Tau 及其误差
+            delta_tau = target_tau_mean - ref_tau_mean
+            # 误差合成: sigma_delta_tau = sqrt(sigma_t^2 + sigma_r^2)
+            delta_tau_err = np.sqrt(target_tau_err**2 + ref_tau_err**2)
+
+            # 3. 计算 Q 和 Error Propagation
             with np.errstate(divide='ignore', invalid='ignore'):
+                # Q = -ln(R) / D
                 ratio = target_flux / ref_flux_used
                 ratio[ratio <= 0] = np.nan
                 q_curve = -np.log(ratio) / delta_tau
 
-                # --- Error Propagation ---
-                # sigma_Q = (1/delta_tau) * (sigma_F / F)
-                # 注意：ref_flux_used 视为无误差常量
-                q_err = (1.0 / np.abs(delta_tau)) * (target_flux_err / np.abs(target_flux))
+                # 分子误差项: sigma_N = sigma_F / F
+                sigma_numerator = target_flux_err / np.abs(target_flux)
+
+                # 分母误差项: sigma_D = delta_tau_err
+
+                # 完整公式: sigma_Q = (1/|D|) * sqrt( sigma_N^2 + (Q * sigma_D)^2 )
+                term1 = sigma_numerator**2
+                term2 = (q_curve * delta_tau_err)**2
+
+                q_err = (1.0 / np.abs(delta_tau)) * np.sqrt(term1 + term2)
 
             self.attenuation_curves[g_idx] = {
                 'wavelength': averager.common_wavelength,
                 'Q_lambda': q_curve,
-                'Q_err': q_err,      # <--- 新增
-                'delta_tau': delta_tau
+                'Q_err': q_err,
+                'delta_tau': delta_tau,
+                'delta_tau_err': delta_tau_err # 记录一下备查
             }
 
-        # --- 计算 Effective Curve 及其误差 ---
+        # ... (Effective Curve 的加权平均逻辑保持不变) ...
+        # 注意：这里的 weights 依然使用 delta_tau 是合理的 (信噪比与 tau 成正比)
+        # 或者你也可以改用 1/q_err^2 作为权重，但这通常太复杂且容易不稳定
         if self.attenuation_curves:
             q_list = [d['Q_lambda'] for d in self.attenuation_curves.values()]
             err_list = [d['Q_err'] for d in self.attenuation_curves.values()]
             w_list = [d['delta_tau'] for d in self.attenuation_curves.values()]
 
-            # 转换为 Masked Array
             stack_q = np.ma.masked_invalid(np.array(q_list))
             stack_err = np.ma.masked_invalid(np.array(err_list))
             weights = np.array(w_list)
 
-            # 1. 加权平均值
             self.effective_curve = np.ma.average(stack_q, axis=0, weights=weights).filled(np.nan)
 
-            # 2. 误差合成
-            # 公式: sigma_eff = sqrt( sum( (w_i * sigma_i)^2 ) ) / sum(w_i)
-            # 注意：这是假设各组误差相互独立
             w_sum = np.sum(weights)
             weighted_var_sum = np.sum((stack_err * weights[:, np.newaxis])**2, axis=0)
-            self.effective_curve_err = (np.sqrt(weighted_var_sum) / w_sum).filled(np.nan) # <--- 新增结果
+            self.effective_curve_err = (np.sqrt(weighted_var_sum) / w_sum).filled(np.nan)
 
             self.effective_curve_wave = list(self.attenuation_curves.values())[0]['wavelength']
-            print(f"Computed effective curve and errors using {mode} reference.")
-        else:
-            print("No groups available.")
+            print(f"Computed effective curve with FULL error propagation (Flux + Tau).")
 
     # =========================================================================
     # 3. 拟合与推导 (Analysis)
