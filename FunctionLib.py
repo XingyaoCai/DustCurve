@@ -1,3 +1,4 @@
+from cProfile import label
 import collections
 import inspect
 import os
@@ -3974,9 +3975,9 @@ class DustAttenuationAnalyst:
 
         # 发射线 Mask 区域
         self.mask_regions = [
-            (3675, 4150), (4300, 4400), (4800, 5100),
-            (5850, 5900), (6200, 6325), (6500, 6775),
-            (7000, 7150), (7300, 7500)
+            (1850,1950),(3675, 4150), (4300, 4400), (4800, 5150),
+            (5850, 5950), (6200, 6325), (6475, 6775),
+            (7000, 7200), (7300, 7500)
         ]
 
         # 数据存储容器
@@ -4371,7 +4372,7 @@ class DustAttenuationAnalyst:
     # 4. 绘图方法 (Visualization)
     # =========================================================================
 
-    def plot_fit_vs_calzetti(self):
+    def plot_fit_vs_calzetti(self,if_show=True, if_plot_samples=False,n_samples=None):
         """绘制图表 1：Effective Q_lambda 数据 vs 多项式拟合 vs Calzetti"""
         if self.poly_coeffs is None: self.fit_polynomial()
 
@@ -4382,27 +4383,46 @@ class DustAttenuationAnalyst:
         fig, ax = plt.subplots()
 
         # 原始数据
-        ax.plot(wave, self.effective_curve, color='blue', lw=3, alpha=0.4,
-                label=f'Calculated Curve ({self.curve_mode} ref)')
+        # ax.plot(wave, self.effective_curve, color='blue', lw=3, alpha=0.4,
+        #         label=f'Calculated Curve ({self.curve_mode} ref)',zorder=1)
+        ax.plot(wave, self.effective_curve, color="#024CB3", lw=1.5, alpha=0.4,
+                label='Stacked Data',zorder=1)
         ax.errorbar(wave, self.effective_curve, yerr=self.effective_curve_err,
-                    fmt='o', color='blue', alpha=0.2, markersize=4, capsize=2)
+                    fmt='o', color="#3488FC", alpha=0.2, markersize=2, capsize=2,zorder=1)
 
         # 拟合曲线
-        ax.plot(wave, y_fit, color='black', lw=3, ls='--',
-                label=r'Polynomial Fit ($x=1/\lambda$)')
-
+        ax.plot(wave, y_fit, color="#0B0272", lw=3, ls='--',
+                label='This Study',zorder=5)
         # Calzetti 参考
         calz = self.get_calzetti_law(wave)
-        ax.plot(wave, calz, color='red', lw=3, label='Calzetti (2000)')
+        ax.plot(wave, calz, color='red', lw=3, label='Calzetti et al., (2000)',zorder=4)
+
+        if if_plot_samples:
+            n_total=len(self.mcmc_samples)
+            if n_samples is None or n_samples > n_total:
+                n_samples=n_total
+            selected_indices = np.random.choice(n_total, size=n_samples, replace=False)
+            label_added=False
+            label_text='MCMC Fit Samples'
+            for idx in selected_indices:
+                sample_coeffs = self.mcmc_samples[idx]
+                sample_shape = np.polyval(sample_coeffs, x)
+                ax.plot(wave, sample_shape, color='gray', lw=1, alpha=0.1,zorder=2)
+                label_added=True
+
+
 
         ax.set_xlabel('Wavelength (Å)')
         ax.set_ylabel(r'$Q_\lambda$ (Attenuation Curve)')
-        ax.set_title(r'Effective Attenuation Curve: Fit vs Calzetti')
+        # ax.set_title(r'Effective Attenuation Curve: Fit vs Calzetti')
         ax.set_xlim(1500, 8000)
-        ax.set_ylim(-2, 7)
+        ax.set_ylim(-1, 3)
         ax.legend()
         ax.grid(True, alpha=0.2)
-        plt.show()
+        if if_show:
+            plt.show()
+        else:
+            return fig, ax
 
     def plot_derived_k_curve(self):
         """绘制图表 2：推导出的归一化 Extinction Curve k(lambda)"""
@@ -4556,7 +4576,7 @@ class DustAttenuationAnalyst:
             if fig is None or ax is None:
                 raise ValueError("If if_input is True, fig and ax must be provided.")
         else:
-            fig, ax = plt.subplots(figsize=(12, 10))
+            fig, ax = plt.subplots()
             draw_background = True
 
         x_grid = np.linspace(0.5, 8.2, 1000) # 1/um
@@ -4610,24 +4630,24 @@ class DustAttenuationAnalyst:
 
             ax.plot(x_grid, y_mw, color='green', ls=':', lw=2, label='Milky Way (CCM89)')
             ax.plot(x_grid, y_smc, color='purple', ls='-.', lw=2, label='SMC (Pei92)')
-            ax.plot(x_grid, y_calz, color='black', ls='--', lw=3, label='Calzetti (2000)')
+            ax.plot(x_grid, y_calz, color='black', ls='--', lw=2, label='Calzetti (2000)')
 
             # 辅助线
             x_V, x_B = 1.0/0.55, 1.0/0.44
             ax.axhline(0, color='gray', linestyle='-', alpha=0.3)
             ax.axvline(x_V, color='gray', linestyle='-', alpha=0.3)
             ax.scatter([x_V], [0], color='black', s=80, zorder=10)
-            ax.text(x_V, 0.5, 'V (5500$\AA$)\nNormalized to 0', rotation=90, color='gray', fontsize=14, ha='right')
+            ax.text(x_V, 0.5, 'V (5500$\AA$)\nNormalized to 0', rotation=90, color='gray', fontsize=20, ha='right')
 
             ax.axhline(1, color='gray', linestyle=':', alpha=0.3)
             ax.axvline(x_B, color='gray', linestyle=':', alpha=0.3)
             ax.scatter([x_B], [1], color='black', s=80, zorder=10)
-            ax.text(x_B, 1.5, 'B (4400$\AA$)\nNormalized to 1', rotation=90, color='gray', fontsize=14, ha='right')
+            ax.text(x_B, 1.5, 'B (4400$\AA$)\nNormalized to 1', rotation=90, color='gray', fontsize=20, ha='right')
 
-            ax.set_xlabel(r'Inverse Wavelength $\lambda^{-1}$ ($\mu m^{-1}$)', fontsize=20)
-            ax.set_ylabel(r'$E(\lambda - V) / E(B - V)$', fontsize=20)
-            ax.set_title(r'Reddening Curves Comparison (Independent of $R_V$)', fontsize=24)
-            ax.set_xlim(0.5, 8.2)
+            ax.set_xlabel(r'Inverse Wavelength $\lambda^{-1}$ ($\mu m^{-1}$)')
+            ax.set_ylabel(r'$E(\lambda - V) / E(B - V)$')
+            # ax.set_title(r'Reddening Curves Comparison (Independent of $R_V$)')
+            ax.set_xlim(0.5, 8)
             ax.set_ylim(-2, 12)
 
             # 顶部波长轴
@@ -4635,23 +4655,40 @@ class DustAttenuationAnalyst:
             ticks = [10000, 5500, 4400, 3000, 2000, 1500]
             ax2.set_xlim(ax.get_xlim())
             ax2.set_xticks([10000.0/t for t in ticks])
-            ax2.set_xticklabels([str(t) for t in ticks], fontsize=14)
-            ax2.set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
+            ax2.set_xticklabels([str(t) for t in ticks])
+            ax2.set_xlabel(r'Wavelength ($\AA$)')
             ax.grid(True, alpha=0.2)
 
         # ==========================================
         # 4. 绘制 MCMC 样本线 (在最佳拟合线下面绘制)
         # ==========================================
         if sample_lines_y:
+            # 将样本线绘制在较低的图层 (zorder=1)
             for y_samp in sample_lines_y:
-                # 使用与主曲线相同的颜色，但透明度极低
-                ax.plot(x_grid, y_samp, color=curve_color, alpha=0.05, lw=1)
+                ax.plot(x_grid, y_samp,
+                        color=curve_color,
+                        alpha=0.05,       # 保持极低透明度
+                        lw=1,             # 保持细线
+                        zorder=1)         # 放在底层
 
         # ==========================================
-        # 5. 绘制最佳拟合线
+        # 5. 绘制最佳拟合线 (前景强调)
         # ==========================================
-        ax.plot(x_grid, y_derived, color=curve_color, lw=4, label=curve_label)
 
+        # 技巧：先画一条粗的白色线作为背景 (Halo)，把主线“托”出来
+        # 这样即使背景很乱，主线周围也会有一圈白色光晕，使其清晰可见
+        # ax.plot(x_grid, y_derived,
+        #         color='white',
+        #         lw=4,             # 比主线粗，作为描边
+        #         alpha=0.8,        # 稍微带一点透明度，让网格线隐约可见，或者设为1.0完全遮挡
+        #         zorder=4)         # 在样本线之上，主线之下
+
+        # 再画真正的最佳拟合线
+        ax.plot(x_grid, y_derived,
+                color=curve_color,
+                lw=2,             # 增加线宽 (比如从 2 改为 3 或 4)
+                label=curve_label,
+                zorder=5)         # 放在最顶层
         # 图例去重
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
@@ -4981,7 +5018,7 @@ class DustAttenuationAnalyst:
             ax.set_ylabel(r'$A_\lambda / A_V$', fontsize=20)
             ax.set_title('Extinction Curves Comparison', fontsize=24)
             ax.set_xlim(0.5, 8.2)
-            ax.set_ylim(0, 9) # 根据 UV 上升幅度调整
+            ax.set_ylim(0, 6) # 根据 UV 上升幅度调整
 
             # 顶部波长刻度
             ax2 = ax.twiny()
@@ -4995,6 +5032,99 @@ class DustAttenuationAnalyst:
             ax.grid(True, alpha=0.2)
             plt.tight_layout()
             plt.show()
+
+
+    def plot_Q_comparation(self, if_show=True):
+        """
+        绘制图表 1：Effective Q_lambda 数据 vs 多项式拟合 vs 参考模型 (Calzetti, MW, SMC)
+        保持 X轴为波长(A)，Y轴为 Q_lambda。
+        """
+        if self.poly_coeffs is None: self.fit_polynomial()
+
+        # 准备数据
+        wave = self.effective_curve_wave
+        x = 10000.0 / wave  # 1/um (用于计算模型)
+
+        # 拟合曲线值
+        y_fit = self._poly_shape(x)
+
+        # 计算 MW 和 SMC 参考线
+        # _get_normalized_reddening 返回的是 E(l-V)/E(B-V)，这与 Q_lambda (k-Rv) 的量级和物理意义一致
+        q_mw = self._get_normalized_reddening(x, 'mw')
+        q_smc = self._get_normalized_reddening(x, 'smc')
+        q_calz=self._get_normalized_reddening(x, 'calzetti')
+
+
+        wave_Hb = 4861.0
+        wave_Ha = 6563.0
+        wave_V  = 5500.0
+
+        def convert_to_Q(x_vals, k_vals, model_func=None, model_name=None):
+            # 如果提供了 model_func，先计算关键点的 k 值
+            if model_func:
+                k_grid = k_vals
+                k_Hb = model_func([10000./wave_Hb], model_name)[0]
+                k_Ha = model_func([10000./wave_Ha], model_name)[0]
+                k_V  = model_func([10000./wave_V], model_name)[0]
+            else:
+                # 针对数据 (Data)，需要插值找到关键点
+                # x_vals 必须是单调的以便插值
+                k_grid = k_vals
+                k_Hb = np.interp(10000./wave_Hb, x_vals, k_vals)
+                k_Ha = np.interp(10000./wave_Ha, x_vals, k_vals)
+                k_V  = np.interp(10000./wave_V, x_vals, k_vals)
+
+            denominator = k_Hb - k_Ha
+            # 避免分母为0
+            if abs(denominator) < 1e-5: return np.zeros_like(k_grid)
+
+            return (k_grid - k_V) / denominator
+
+        # 获取 Calzetti (保持你原有的调用方式，或者也统一用 _get_normalized_reddening)
+        # 这里为了稳妥，我统一使用 _get_normalized_reddening 以确保三条参考线归一化标准一致
+        q_calz = convert_to_Q(x, self._get_normalized_reddening(x, 'calzetti'))
+        q_mw = convert_to_Q(x, q_mw)
+        q_smc = convert_to_Q(x, q_smc)
+
+        # --- 绘图 ---
+        fig, ax = plt.subplots()
+
+        # 1. 原始数据 (带误差棒)
+        ax.plot(wave, self.effective_curve, color='blue', lw=3, alpha=0.4,
+                label=f'Calculated Curve ({self.curve_mode} ref)')
+
+        if self.effective_curve_err is not None:
+            ax.errorbar(wave, self.effective_curve, yerr=self.effective_curve_err,
+                        fmt='o', color='blue', alpha=0.2, markersize=4, capsize=2)
+
+        # 2. 你的拟合曲线
+        ax.plot(wave, y_fit, color='black', lw=3, ls='-', zorder=10,
+                label=r'Polynomial Fit ($x=1/\lambda$)')
+
+        # 3. 参考模型 (Milky Way & SMC) - 新增部分
+        ax.plot(wave, q_mw, color='green', ls=':', lw=2, label='Milky Way (CCM89)')
+        ax.plot(wave, q_smc, color='purple', ls='-.', lw=2, label='SMC (Pei92)')
+
+        # 4. 参考模型 (Calzetti)
+        ax.plot(wave, q_calz, color='red', ls='--', lw=3, label='Calzetti (2000)')
+
+        # 样式设置 (保持不变)
+        ax.set_xlabel('Wavelength (Å)')
+        ax.set_ylabel(r'$Q_\lambda$ (Attenuation Curve)')
+        ax.set_title(r'Effective Attenuation Curve vs. Standard Laws')
+        ax.set_xlim(1500, 8000)
+
+        # 自动调整 Y 轴范围，或者保持你之前的 (-1, 3)
+        # 如果 SMC 在 UV 端很高，可能需要稍微放开一点上限
+        ax.set_ylim(-1, 5)
+
+        ax.legend(fontsize=16, loc='upper left') # 调整位置以免遮挡
+        ax.grid(True, alpha=0.2)
+
+        if if_show:
+            plt.show()
+        else:
+            return fig, ax
 
     def run_mcmc_fitting(self, nwalkers=32, nsteps=2000, poly_order=3):
         """
@@ -5075,6 +5205,7 @@ class DustAttenuationAnalyst:
         self.poly_coeffs = np.median(self.mcmc_samples, axis=0)
         print("MCMC Best Fit Coeffs:", self.poly_coeffs)
 
+
         return self.mcmc_samples
 
     def plot_mcmc_results(self, plot_samples=True, n_samples=100):
@@ -5146,7 +5277,7 @@ class DustAttenuationAnalyst:
         ax.set_ylabel(r'$Q_\lambda$')
         ax.set_title('MCMC Polynomial Fit with Posterior Samples')
         ax.set_xlim(1500, 8000)
-        ax.set_ylim(-2, 8)
+        ax.set_ylim(-1, 3)
 
         # 处理 Legend，避免重复
         handles, labels = ax.get_legend_handles_labels()
