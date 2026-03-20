@@ -4368,6 +4368,25 @@ class DustAttenuationAnalyst:
 
         print(f"Derived Parameters: S={self.scaling_factor:.4f}, Intercept={self.intercept_val}, Rv={self.derived_Rv:.3f}")
 
+    def derive_f_factor(self):
+        """
+        推导 f-factor (E(B-V)_star / E(B-V)_gas)。
+
+        公式：f = Q(Hβ)-Q(Hα), 其中 Q(λ) 是拟合曲线在 Hα 和 Hβ 波长处的值。
+        """
+        if self.poly_coeffs is None:
+            self.fit_polynomial()
+
+        x_Ha = 1.0 / (6563.0 / 10000.0)
+        x_Hb = 1.0 / (4861.0 / 10000.0)
+
+        Q_Ha = self._poly_shape(x_Ha)
+        Q_Hb = self._poly_shape(x_Hb)
+
+        f_factor = Q_Hb - Q_Ha
+        print(f"Derived f-factor: f = {f_factor:.4f}")
+        return f_factor
+
     # =========================================================================
     # 4. 绘图方法 (Visualization)
     # =========================================================================
@@ -4807,6 +4826,25 @@ class DustAttenuationAnalyst:
             # Returns A_lambda / A_V
             return k / Rv
 
+        def get_battisti_16_curve_Av(x, Rv=4.05):
+            lam_um = 1.0 / x
+            k = np.zeros_like(x)
+
+            # Range 1: 0.12um to 0.63um
+            mask1 = (lam_um >= 0.12) & (lam_um < 0.83)
+            if np.any(mask1):
+                l = lam_um[mask1]
+                k[mask1] = 2.396 * (-2.488 + 1.803/l - 0.261/l**2 + 0.0145/l**3) + Rv
+
+            # Range 2: 0.63um to 2.2um
+            mask2 = (lam_um >= 0.83) & (lam_um <= 2.2)
+            if np.any(mask2):
+                l = lam_um[mask2]
+                k[mask2] = 2.659 * (-1.857 + 1.040/l) + Rv
+
+            # Returns A_lambda / A_V
+            return k / Rv
+
         # --- Selector Logic ---
         if type_name == 'mw':
             y_vals = get_mw_ccm89_Av(x_grid, Rv=3.1)
@@ -4814,6 +4852,8 @@ class DustAttenuationAnalyst:
             y_vals = get_smc_pei92_Av(x_grid)
         elif type_name == 'calzetti':
             y_vals = get_calzetti_curve_Av(x_grid, Rv=4.05)
+        elif type_name == 'battisti16':
+            y_vals = get_battisti_16_curve_Av(x_grid, Rv=4.05)
         else:
             return np.zeros_like(x_grid)
 
@@ -4827,6 +4867,7 @@ class DustAttenuationAnalyst:
             if type_name == 'mw': return get_mw_ccm89_Av(np.array([x_pt]), Rv=3.1)[0]
             if type_name == 'smc': return get_smc_pei92_Av(np.array([x_pt]))[0]
             if type_name == 'calzetti': return get_calzetti_curve_Av(np.array([x_pt]), Rv=4.05)[0]
+            if type_name == 'battisti16': return get_battisti_16_curve_Av(np.array([x_pt]), Rv=4.05)[0]
             return 0.0
 
         y_B = get_pt(x_B)
