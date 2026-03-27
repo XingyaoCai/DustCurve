@@ -4374,18 +4374,28 @@ class DustAttenuationAnalyst:
 
         公式：f = Q(Hβ)-Q(Hα), 其中 Q(λ) 是拟合曲线在 Hα 和 Hβ 波长处的值。
         """
-        if self.poly_coeffs is None:
-            self.fit_polynomial()
+        wave_Ha = 0.6563
+        wave_Hb = 0.4861
 
-        x_Ha = 1.0 / (6563.0 / 10000.0)
-        x_Hb = 1.0 / (4861.0 / 10000.0)
+        x_Ha= 1.0 / wave_Ha
+        x_Hb= 1.0 / wave_Hb
 
-        Q_Ha = self._poly_shape(x_Ha)
-        Q_Hb = self._poly_shape(x_Hb)
+        f_samples=[]
 
-        f_factor = Q_Hb - Q_Ha
-        print(f"Derived f-factor: f = {f_factor:.4f}")
-        return f_factor
+        for coeffs in self.mcmc_samples:
+            c3, c2, c1, c0 = coeffs
+            Q_Ha = c3 * x_Ha**3 + c2 * x_Ha**2 + c1 * x_Ha + c0
+            Q_Hb = c3 * x_Hb**3 + c2 * x_Hb**2 + c1 * x_Hb + c0
+            f_samples.append(Q_Hb - Q_Ha)
+
+        f_samples=np.array(f_samples)
+
+        f_mean=np.mean(f_samples)
+        f_median=np.median(f_samples)
+        f_err_lower=f_median - np.percentile(f_samples, 16)
+        f_err_upper=np.percentile(f_samples, 84) - f_median
+
+        return f_mean, f_median, f_err_lower, f_err_upper
 
     # =========================================================================
     # 4. 绘图方法 (Visualization)
