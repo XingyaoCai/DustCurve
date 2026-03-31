@@ -3584,11 +3584,14 @@ class SpectrumAverager:
     def plot_average_spectrum(self, show_individual=True, show_average=True, show_error=True,
                               show_masked_comparison=True, figsize=(15, 8), alpha=0.1,
                               show_normalization_point=True, reference_wavelength=5500.0,
-                              ylim=None, if_show=True):
+                              ylim=None, if_show=True, if_input=False, fig=None, ax=None):
         """
         Plot average spectrum. Supports visualizing masked vs unmasked data.
         """
-        fig, ax = plt.subplots(figsize=figsize)
+        if if_input and fig is not None and ax is not None:
+            pass  # 使用传入的 fig 和 ax
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
 
         # 1. 绘制个体光谱
         if show_individual and self.normalized_fluxes is not None:
@@ -5177,55 +5180,133 @@ class DustAttenuationAnalyst:
         else:
             return fig, ax
 
-    def run_mcmc_fitting(self, nwalkers=32, nsteps=2000, poly_order=3):
-        """
-        使用 MCMC (emcee) 拟合，并强制 UV 端单调递增 (Derivative >= 0)。
-        """
+    # def run_mcmc_fitting(self, nwalkers=32, nsteps=2000, poly_order=3):
+    #     """
+    #     使用 MCMC (emcee) 拟合，并强制 UV 端单调递增 (Derivative >= 0)。
+    #     """
+    #     import emcee
+
+    #     if self.effective_curve is None or self.effective_curve_err is None:
+    #         raise ValueError("Data or Error missing. Run compute_attenuation_curves first.")
+
+    #     # 1. 准备数据 (x = 1/lambda)
+    #     wave_um = self.effective_curve_wave / 10000.0
+    #     x_data = 1.0 / wave_um
+    #     y_data = self.effective_curve
+    #     y_err = self.effective_curve_err
+
+    #     # 剔除 NaN 和 Inf
+    #     mask = np.isfinite(x_data) & np.isfinite(y_data) & np.isfinite(y_err) & (y_err > 0)
+    #     x_fit, y_fit, err_fit = x_data[mask], y_data[mask], y_err[mask]
+
+    #     # -----------------------------------------------------------------
+    #     # 定义内部函数
+    #     # -----------------------------------------------------------------
+
+    #     # 模型: c3*x^3 + c2*x^2 + c1*x + c0
+    #     def model(theta, x):
+    #         return np.polyval(theta, x)
+
+    #     def log_likelihood(theta, x, y, yerr):
+    #         model_y = model(theta, x)
+    #         sigma2 = yerr ** 2
+    #         return -0.5 * np.sum((y - model_y) ** 2 / sigma2 + np.log(sigma2))
+
+
+    #     def log_prior(theta):
+    #         # 1. 基础参数范围限制 (防止跑飞)
+    #         # theta 顺序是 [c3, c2, c1, c0] (最高次幂在前)
+    #         c3, c2, c1, c0 = theta
+    #         if not (-10 < c3 < 10 and -20 < c2 < 20 and -20 < c1 < 20 and -10 < c0 < 10):
+    #             return -np.inf
+
+    #         # 2. 【核心修改】强制 UV 端单调递增 (Derivative >= 0)
+    #         # 我们检查 x 在 [2.5, 8.5] 范围内 (即 UV 到 远UV)
+    #         # 多项式 P(x) = c3*x^3 + c2*x^2 + c1*x + c0
+    #         # 导数 P'(x) = 3*c3*x^2 + 2*c2*x + c1
+
+    #         x_check = np.linspace(2.5, 8.5, 20) # 检查点的范围
+    #         deriv = 3 * c3 * (x_check**2) + 2 * c2 * x_check + c1
+
+    #         # 如果在检查范围内任何一点导数小于 0 (曲线下降)，则拒绝该参数
+    #         if np.any(deriv < 0):
+    #             return -np.inf
+
+    #         return 0.0
+
+    #     def log_probability(theta, x, y, yerr):
+    #         lp = log_prior(theta)
+    #         if not np.isfinite(lp):
+    #             return -np.inf
+    #         return lp + log_likelihood(theta, x, y, yerr)
+
+    #     # -----------------------------------------------------------------
+    #     # 运行 MCMC
+    #     # -----------------------------------------------------------------
+
+    #     # 初始猜测
+    #     initial_coeffs = np.polyfit(x_fit, y_fit, poly_order)
+    #     ndim = len(initial_coeffs)
+    #     pos = initial_coeffs + 1e-4 * np.random.randn(nwalkers, ndim)
+
+    #     print(f"Running MCMC with {nwalkers} walkers for {nsteps} steps (Monotonicity Constrained)...")
+    #     sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability, args=(x_fit, y_fit, err_fit))
+    #     sampler.run_mcmc(pos, nsteps, progress=True)
+
+    #     discard = int(nsteps * 0.25)
+    #     self.mcmc_samples = sampler.get_chain(discard=discard, thin=15, flat=True)
+
+    #     # 更新最佳系数
+    #     self.poly_coeffs = np.median(self.mcmc_samples, axis=0)
+    #     print("MCMC Best Fit Coeffs:", self.poly_coeffs)
+
+
+    #     return self.mcmc_samples
+
+
+    def run_mcmc_fitting(self, nwalkers=32, nsteps=3000, poly_order=3):
         import emcee
 
-        if self.effective_curve is None or self.effective_curve_err is None:
-            raise ValueError("Data or Error missing. Run compute_attenuation_curves first.")
-
-        # 1. 准备数据 (x = 1/lambda)
+        # 1. 准备数据
         wave_um = self.effective_curve_wave / 10000.0
-        x_data = 1.0 / wave_um
+        x_data = 1.0 / wave_um  # x = 1/lambda
         y_data = self.effective_curve
         y_err = self.effective_curve_err
-
-        # 剔除 NaN 和 Inf
         mask = np.isfinite(x_data) & np.isfinite(y_data) & np.isfinite(y_err) & (y_err > 0)
         x_fit, y_fit, err_fit = x_data[mask], y_data[mask], y_err[mask]
 
         # -----------------------------------------------------------------
-        # 定义内部函数
+        # 修正后的内部函数
         # -----------------------------------------------------------------
 
-        # 模型: c3*x^3 + c2*x^2 + c1*x + c0
         def model(theta, x):
-            return np.polyval(theta, x)
+            return np.polyval(theta[:-1], x) # 前几个是多项式系数
 
         def log_likelihood(theta, x, y, yerr):
-            model_y = model(theta, x)
-            sigma2 = yerr ** 2
-            return -0.5 * np.sum((y - model_y) ** 2 / sigma2 + np.log(sigma2))
+            # theta = [c3, c2, c1, c0, log_f]
+            coeffs = theta[:-1]
+            log_f = theta[-1] # 这里的 f 代表固有散射的对数
+
+            model_y = np.polyval(coeffs, x)
+            # 核心修正：总方差 = 观测误差方差 + 固有抖动方差
+            sigma2 = yerr**2 + np.exp(2 * log_f)
+
+            # 正常的似然函数，包含 ln(sigma2) 项，这会防止 jitter 无限变大
+            return -0.5 * np.sum((y - model_y)**2 / sigma2 + np.log(2 * np.pi * sigma2))
 
         def log_prior(theta):
-            # 1. 基础参数范围限制 (防止跑飞)
-            # theta 顺序是 [c3, c2, c1, c0] (最高次幂在前)
-            c3, c2, c1, c0 = theta
-            if not (-10 < c3 < 10 and -20 < c2 < 20 and -20 < c1 < 20 and -10 < c0 < 10):
+            coeffs = theta[:-1]
+            log_f = theta[-1]
+
+            # 1. 参数范围限制
+            if not (-20 < log_f < 2): # 限制抖动在合理范围内
                 return -np.inf
 
-            # 2. 【核心修改】强制 UV 端单调递增 (Derivative >= 0)
-            # 我们检查 x 在 [2.5, 8.5] 范围内 (即 UV 到 远UV)
-            # 多项式 P(x) = c3*x^3 + c2*x^2 + c1*x + c0
-            # 导数 P'(x) = 3*c3*x^2 + 2*c2*x + c1
-
-            x_check = np.linspace(2.5, 8.5, 20) # 检查点的范围
+            # 2. 单调性约束 (P'(x) >= 0)
+            c3, c2, c1, c0 = coeffs
+            x_check = np.linspace(2.5, 8.5, 20)
             deriv = 3 * c3 * (x_check**2) + 2 * c2 * x_check + c1
-
-            # 如果在检查范围内任何一点导数小于 0 (曲线下降)，则拒绝该参数
-            if np.any(deriv < 0):
+            if np.any(deriv < -0.05): # 允许极微小的扰动，防止死锁
                 return -np.inf
 
             return 0.0
@@ -5237,25 +5318,29 @@ class DustAttenuationAnalyst:
             return lp + log_likelihood(theta, x, y, yerr)
 
         # -----------------------------------------------------------------
-        # 运行 MCMC
+        # 运行 MCMC (带物理初始值)
         # -----------------------------------------------------------------
+        # 先用 polyfit 得到一个非常好的初始值
+        p_init = np.polyfit(x_fit, y_fit, poly_order)
+        # 初始 log_f 设为一个较小的值（比如平均误差的一半）
+        initial_log_f = np.log(np.median(err_fit) * 0.5)
 
-        # 初始猜测
-        initial_coeffs = np.polyfit(x_fit, y_fit, poly_order)
-        ndim = len(initial_coeffs)
-        pos = initial_coeffs + 1e-4 * np.random.randn(nwalkers, ndim)
+        initial_theta = np.append(p_init, initial_log_f)
+        ndim = len(initial_theta)
 
-        print(f"Running MCMC with {nwalkers} walkers for {nsteps} steps (Monotonicity Constrained)...")
+        # 让所有 Walker 紧密围绕在 polyfit 结果周围开始
+        pos = initial_theta + 1e-4 * np.random.randn(nwalkers, ndim)
+
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability, args=(x_fit, y_fit, err_fit))
         sampler.run_mcmc(pos, nsteps, progress=True)
 
-        discard = int(nsteps * 0.25)
-        self.mcmc_samples = sampler.get_chain(discard=discard, thin=15, flat=True)
+        # 提取样本
+        flat_samples = sampler.get_chain(discard=int(nsteps*0.3), thin=15, flat=True)
+        self.mcmc_samples = flat_samples[:, :-1] # 只保存多项式系数
+        self.jitter_samples = np.exp(flat_samples[:, -1]) # 保存抖动值
 
-        # 更新最佳系数
         self.poly_coeffs = np.median(self.mcmc_samples, axis=0)
-        print("MCMC Best Fit Coeffs:", self.poly_coeffs)
-
+        print("最佳抖动 (Jitter) 中位数:", np.median(self.jitter_samples))
 
         return self.mcmc_samples
 
